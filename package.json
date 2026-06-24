@@ -1,0 +1,26 @@
+{
+  "name": "qq-fm-player",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A minimal music player for Mac with QQ Music integration, inspired by Douban FM",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:server": "cd packages/server && npm run start:dev",
+    "dev:renderer": "cd packages/renderer && npm run dev",
+    "dev:electron": "cd packages/electron && npm run dev",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:renderer\" \"sleep 3 && npm run dev:electron\"",
+    "build:server": "cd packages/server && npm run build",
+    "build:renderer": "cd packages/renderer && npm run build",
+    "build:electron": "cd packages/electron && npm run build",
+    "build": "npm run build:server && npm run build:renderer && npm run build:electron",
+    "lint": "cd packages/renderer && npm run lint",
+    "typecheck": "cd packages/renderer && npm run typecheck"
+  },
+  "author": "tangshuai89",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^10.0.3"
+  }
+}

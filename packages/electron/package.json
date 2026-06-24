@@ -1,0 +1,41 @@
+{
+  "name": "@qq-fm/electron",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "tsc && electron dist/main.js",
+    "build": "tsc",
+    "start": "electron dist/main.js",
+    "pack": "electron-builder --mac"
+  },
+  "dependencies": {
+    "electron-is-dev": "^2.0.0"
+  },
+  "devDependencies": {
+    "electron": "^31.3.1",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.5.4",
+    "@types/node": "^22.0.0"
+  },
+  "build": {
+    "appId": "com.qqfm.player",
+    "productName": "QQ FM Player",
+    "mac": {
+      "category": "public.app-category.music",
+      "target": "dmg"
+    },
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../renderer/dist",
+        "to": "renderer"
+      }
+    ]
+  }
+}
