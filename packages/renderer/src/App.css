@@ -1,15 +1,38 @@
+/* ─────────────────────────────────────────────────────────────────
+ * Classic black-disc music player.
+ *
+ *   ┌─  topbar  source⇄ | preset | theme | auth | reset ─┐
+ *   │                                                    │
+ *   │                  ◯  cover  ◯                        │  ← round
+ *   │                  (rotating)                        │     LP
+ *   │                                                    │
+ *   │                  Title                               │
+ *   │                  Artist · Album ----------------   │
+ *   │                                                    │
+ *   │              ●───────  0:00 / 0:29                │
+ *   │                                                    │
+ *   │              ×  ♥  ▶  ⏭                          │
+ *   │                                                    │
+ *   └────────────────────────────────────────────────────┘
+ *
+ * Calm, traditional Douban-FM-style. No neon, no Plexamp gradients,
+ * no full-bleed cover — just a round disc and a quiet UI.
+ * ───────────────────────────────────────────────────────────────── */
+
 .app {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
   height: 100vh;
-  padding: 24px 32px 32px;
-  gap: 20px;
-  background: linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-primary) 100%);
+  padding: 60px 32px 32px;  /* leave 60px at top for the titlebar */
+  gap: 18px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  overflow: hidden;
 }
 
-/* ── Title bar ── */
+/* ── Title bar (top of window) ───────────────────────────────── */
 .titlebar {
   position: fixed;
   top: 0;
@@ -18,160 +41,306 @@
   height: 40px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 80px 0 16px;
+  gap: 8px;
+  padding: 0 16px 0 96px; /* 96px clears the macOS traffic-light area */
   -webkit-app-region: drag;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
   z-index: 100;
 }
 
-.titlebar-text {
-  font-size: 12px;
+.titlebar > * {
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-btn {
+  font-size: 11px;
   font-weight: 600;
-  color: var(--text-tertiary);
-  letter-spacing: 1px;
-  text-transform: uppercase;
+  color: var(--text-secondary);
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.titlebar-btn:hover {
+  background: var(--bg-overlay);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+
+.titlebar-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Buttons that used to live in the titlebar but were moved down
+ * into the body area (per user request). Same visual style as
+ * .titlebar-btn but absolutely positioned so they can sit in the
+ * content layout instead of the drag-area strip. */
+.body-corner-btn {
+  position: absolute;
+  top: 58px;       /* below the titlebar (40px) + a bit of breathing */
+  left: 21px;      /* tight to the right edge of the traffic lights */
+  z-index: 50;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: var(--bg-overlay);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.2s var(--ease-spring);
+}
+
+.body-corner-btn:hover {
+  background: var(--bg-overlay-strong);
+  color: var(--text-primary);
+  border-color: var(--accent);
+  transform: scale(1.04);
+}
+
+/* Right-side variant: anchored to the top-right corner of the
+   body area, mirroring the source-switch on the left. */
+.body-corner-btn--right {
+  left: auto;
+  right: 21px;
+  padding: 4px 12px;
 }
 
 .source-switch {
-  -webkit-app-region: no-drag;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  transition: color 0.2s ease;
-}
-
-.source-switch:hover {
-  color: var(--text-primary);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .source-switch-icon {
   font-size: 12px;
+  opacity: 0.7;
 }
 
-.titlebar-auth {
-  -webkit-app-region: no-drag;
-}
-
-.auth-btn {
+.preset-select {
   font-size: 11px;
+  font-weight: 500;
   color: var(--text-secondary);
-  padding: 4px 12px;
-  border-radius: 12px;
-  background: var(--bg-primary);
+  background: transparent;
   border: 1px solid var(--border);
-  transition: all 0.2s ease;
+  border-radius: 12px;
+  padding: 3px 10px;
+  cursor: pointer;
+  outline: none;
 }
 
-.auth-btn:hover {
+.preset-select:hover {
   color: var(--text-primary);
-  border-color: var(--accent-hover);
+  border-color: var(--accent);
 }
 
 .login-btn {
-  background: var(--text-primary);
-  color: var(--bg-primary);
-  border-color: var(--text-primary);
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
 }
 
 .login-btn:hover {
-  opacity: 0.85;
+  background: var(--accent-hover);
+  color: #fff;
+  border-color: var(--accent-hover);
 }
 
-/* ── Cover ── */
+.reset-btn {
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-tertiary);
+  padding: 2px 8px;
+}
+
+.reset-btn:hover {
+  color: var(--accent);
+  background: var(--bg-overlay);
+  border-color: var(--border);
+}
+
+/* ── Cover (round black disc) ────────────────────────────────── */
 .cover-container {
-  width: 220px;
-  height: 220px;
-  border-radius: 50%;
-  overflow: hidden;
-  box-shadow: 0 8px 40px var(--shadow), 0 2px 8px var(--shadow);
+  position: relative;
+  width: clamp(220px, 50vh, 260px);
+  height: clamp(220px, 50vh, 260px);
   flex-shrink: 0;
-}
-
-.cover-image,
-.cover-placeholder {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.3s ease;
+  margin-top: 4px;
 }
 
-.cover-placeholder {
-  background: var(--bg-secondary);
-  color: var(--text-tertiary);
+/* The cover sits on a transparent circle; the cover-load hook sets
+ * the background-image. The whole assembly rotates as one (the
+ * LP textures are children, not siblings). */
+.cover-backdrop {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background-color: var(--bg-secondary);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  box-shadow: var(--shadow-lg);
+  /* Real vinyl records rotate at 33⅓ RPM, which is 1.8 sec per
+   * rotation. 28s feels right on a small window — slow enough to be
+   * meditative, fast enough to feel "alive". */
+  animation: spin 28s linear infinite;
+  animation-play-state: running;
+  transition: box-shadow 0.4s ease;
+  overflow: hidden;
 }
 
-.spinning {
-  animation: spin 20s linear infinite;
+.cover-backdrop.paused {
+  animation-play-state: paused;
+}
+
+/* LP record texture (rings + label + hole) — exactly the classic
+ * black-disc look. All three are children of the spinning wrapper
+ * so they rotate with the cover. */
+.vinyl-rings {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    inset 0 0 0 14px rgba(255, 255, 255, 0.04),
+    inset 0 0 0 15px rgba(0, 0, 0, 0.18),
+    inset 0 0 0 28px rgba(255, 255, 255, 0.04),
+    inset 0 0 0 29px rgba(0, 0, 0, 0.18),
+    inset 0 0 0 42px rgba(255, 255, 255, 0.04),
+    inset 0 0 0 43px rgba(0, 0, 0, 0.18),
+    inset 0 0 0 56px rgba(255, 255, 255, 0.04),
+    inset 0 0 0 57px rgba(0, 0, 0, 0.18),
+    inset 0 0 0 70px rgba(255, 255, 255, 0.04),
+    inset 0 0 0 71px rgba(0, 0, 0, 0.18);
+}
+
+.vinyl-label {
+  position: absolute;
+  width: 30%;
+  aspect-ratio: 1;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--cover-accent);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.18),
+    0 2px 6px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  z-index: 3;
+}
+
+.vinyl-hole {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6%;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--bg-primary);
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.6),
+    inset 0 1px 2px rgba(0, 0, 0, 0.45);
+  z-index: 4;
+  pointer-events: none;
 }
 
 @keyframes spin {
   from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  to   { transform: rotate(360deg); }
 }
 
-/* ── Track info ── */
+/* ── Track info ─────────────────────────────────────────────── */
 .track-info {
   text-align: center;
-  max-width: 280px;
+  width: 100%;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .track-title {
   font-size: 18px;
   font-weight: 600;
   color: var(--text-primary);
-  margin-bottom: 4px;
-  white-space: nowrap;
+  letter-spacing: -0.01em;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .track-artist {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text-secondary);
-  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-/* ── Progress ── */
+/* ── Progress bar ───────────────────────────────────────────── */
 .progress-container {
   width: 100%;
   max-width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .progress-bar {
+  position: relative;
   width: 100%;
   height: 3px;
   background: var(--border);
   border-radius: 2px;
-  overflow: hidden;
   cursor: pointer;
+  transition: height 0.15s ease;
+  overflow: visible;
+}
+
+.progress-bar:hover {
+  height: 5px;
 }
 
 .progress-fill {
   height: 100%;
-  background: var(--text-secondary);
+  background: var(--accent);
   border-radius: 2px;
   transition: width 0.3s linear;
+  position: relative;
 }
 
 .progress-time {
   display: flex;
   justify-content: space-between;
-  margin-top: 6px;
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
 }
 
-/* ── Controls ── */
+/* ── Controls ───────────────────────────────────────────────── */
 .controls {
   display: flex;
   align-items: center;
-  gap: 28px;
+  gap: 24px;
+  margin-top: 4px;
 }
 
 .control-btn {
@@ -179,14 +348,15 @@
   align-items: center;
   justify-content: center;
   color: var(--text-secondary);
-  transition: all 0.2s ease;
+  transition: color 0.2s ease, transform 0.2s var(--ease-spring), background 0.2s ease;
   padding: 8px;
   border-radius: 50%;
 }
 
 .control-btn:hover:not(:disabled) {
   color: var(--text-primary);
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--bg-overlay);
+  transform: scale(1.05);
 }
 
 .control-btn:disabled {
@@ -210,20 +380,25 @@
 }
 
 .like-btn.liked {
-  color: var(--heart-active) !important;
+  color: var(--heart-active);
 }
 
 .like-btn.liked:hover {
-  color: var(--heart-active) !important;
+  color: var(--heart-active);
   background: rgba(239, 68, 68, 0.06);
 }
 
-/* ── Spinner ── */
+.dislike-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-overlay);
+}
+
+/* ── Spinner (loading state on play button) ──────────────────── */
 .spinner {
   animation: rotate 1s linear infinite;
 }
 
 @keyframes rotate {
   from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  to   { transform: rotate(360deg); }
 }

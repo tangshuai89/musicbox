@@ -1,0 +1,91 @@
+.error-panel {
+  margin-top: var(--space-2);
+  width: 100%;
+  max-width: 360px;
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  text-align: left;
+  /* Glass tint so it harmonises with the rest of the UI. */
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.error-summary {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px var(--space-3);
+  font-size: 11px;
+  color: var(--error-fg);
+  background: transparent;
+  text-align: left;
+  -webkit-app-region: no-drag;
+  transition: background 0.15s ease;
+}
+
+.error-summary:hover {
+  background: var(--bg-overlay);
+}
+
+.error-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.error-summary-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.error-toggle {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--error-fg-soft);
+}
+
+.error-panel.expanded .error-summary {
+  border-bottom: 1px solid var(--error-border);
+}
+
+.error-detail {
+  padding: var(--space-2) var(--space-3);
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.error-pre {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--error-fg);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+}
+
+.error-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: var(--space-2);
+  justify-content: flex-end;
+}
+
+.error-action {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--error-action-bg);
+  color: var(--error-fg);
+  -webkit-app-region: no-drag;
+  transition: background 0.15s ease;
+}
+
+.error-action:hover {
+  background: var(--error-border);
+}

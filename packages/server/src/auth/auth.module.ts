@@ -1,10 +1,14 @@
-import { Module } from '@nestjs/common';
+import { Module, Global } from '@nestjs/common';
 import { AuthController } from './auth.controller';
-import { AuthService } from './auth.service';
+import { QqOAuthStrategy } from './qq.strategy';
+import { NeteaseAuthStrategy } from './netease-auth.strategy';
+import { CommonModule } from '../common/common.module';
 
+@Global()
 @Module({
+  imports: [CommonModule],
   controllers: [AuthController],
-  providers: [AuthService],
-  exports: [AuthService],
+  providers: [QqOAuthStrategy, NeteaseAuthStrategy],
+  exports: [QqOAuthStrategy, NeteaseAuthStrategy],
 })
 export class AuthModule {}

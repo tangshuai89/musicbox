@@ -1,12 +1,15 @@
 .source-select {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   height: 100vh;
-  padding: 24px 28px 36px;
-  gap: 32px;
-  background: linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-primary) 100%);
+  padding: 0 var(--space-6) var(--space-6);
+  gap: var(--space-6);
+  isolation: isolate;
+  overflow: hidden;
+  background: var(--bg-base);
 }
 
 .source-titlebar {
@@ -16,6 +19,11 @@
   right: 0;
   height: 40px;
   -webkit-app-region: drag;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border-bottom: 1px solid var(--glass-border);
+  z-index: 100;
 }
 
 .source-heading {
@@ -23,49 +31,97 @@
 }
 
 .source-title {
-  font-size: 20px;
-  font-weight: 600;
+  font-size: 28px;
+  font-weight: 700;
   color: var(--text-primary);
+  letter-spacing: -0.02em;
   margin-bottom: 6px;
+  background: linear-gradient(
+    135deg,
+    var(--text-primary) 0%,
+    var(--accent) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .source-subtitle {
   font-size: 13px;
   color: var(--text-secondary);
+  font-weight: 400;
 }
 
 .source-list {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--space-3);
   width: 100%;
-  max-width: 300px;
+  max-width: 360px;
 }
 
 .source-card {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: var(--space-4);
   width: 100%;
-  padding: 16px;
-  border-radius: 16px;
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
-  box-shadow: 0 2px 8px var(--shadow);
-  transition: all 0.2s ease;
+  padding: var(--space-4) var(--space-5);
+  border-radius: var(--radius-lg);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-md);
+  transition: transform 0.25s var(--ease-spring), box-shadow 0.25s ease,
+    border-color 0.25s ease, background 0.25s ease;
   text-align: left;
+  position: relative;
+  overflow: hidden;
+}
+
+.source-card::after {
+  /* Subtle gradient sweep that lights up on hover, suggesting the
+   * source is "alive". */
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    135deg,
+    transparent 0%,
+    var(--accent-soft) 100%
+  );
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  pointer-events: none;
 }
 
 .source-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 8px 24px var(--shadow);
-  border-color: var(--accent-hover);
+  box-shadow: var(--shadow-lg);
+  border-color: var(--border-strong);
+}
+
+.source-card:hover::after {
+  opacity: 1;
+}
+
+.source-card-disabled,
+.source-card-disabled:hover {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: var(--shadow-sm);
+  border-color: var(--glass-border);
+}
+
+.source-card-disabled::after {
+  display: none;
 }
 
 .source-logo {
-  width: 48px;
-  height: 48px;
-  border-radius: 14px;
+  width: 52px;
+  height: 52px;
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -73,14 +129,20 @@
   font-weight: 700;
   color: #fff;
   flex-shrink: 0;
+  box-shadow: var(--shadow-sm);
 }
 
 .source-netease .source-logo {
-  background: #c20c0c;
+  background: linear-gradient(135deg, #c20c0c 0%, #8b0000 100%);
 }
 
 .source-qq .source-logo {
-  background: #31c27c;
+  background: linear-gradient(135deg, #31c27c 0%, #1ba45e 100%);
+}
+
+.source-deezer .source-logo {
+  background: linear-gradient(135deg, #a238ff 0%, #ff6e7f 100%);
+  color: #fff;
 }
 
 .source-meta {
@@ -89,18 +151,26 @@
 }
 
 .source-name {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
+  letter-spacing: -0.01em;
 }
 
 .source-desc {
   font-size: 12px;
   color: var(--text-secondary);
   margin-top: 2px;
+  font-weight: 400;
 }
 
 .source-arrow {
   color: var(--text-tertiary);
   flex-shrink: 0;
+  transition: transform 0.25s var(--ease-spring), color 0.25s ease;
+}
+
+.source-card:hover .source-arrow {
+  color: var(--accent);
+  transform: translateX(4px);
 }

@@ -6,3 +6,6 @@ release/
 *.log
 .DS_Store
 Thumbs.db
+
+# Local session storage (cookies, MUSIC_U, etc.) — never commit
+packages/server/.storage/

@@ -1,5 +1,15 @@
-import { Injectable } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+  Logger,
+} from '@nestjs/common';
 import { MusicProvider } from '../common/provider';
+import { StorageService } from '../common/storage';
+import { ProviderSession, Session } from '../common/session';
+import { QqMusicProvider } from './qq.provider';
+import { NeteaseMusicProvider } from './netease.provider';
+import { DeezerMusicProvider } from './deezer.provider';
 
 export interface Track {
   id: string;
@@ -8,228 +18,269 @@ export interface Track {
   artist: string;
   album: string;
   coverUrl: string;
-  audioUrl: string;
-  duration: number; // seconds
+  audioUrl: string; // 这里是 /music/stream/{provider}/{id} 相对路径，不是真实 URL
+  duration: number;
   liked: boolean;
 }
 
-/**
- * In production each provider would call its own API:
- * - QQ Music:  radio playlist + like endpoints
- * - NetEase:   私人FM (/personal_fm) + like endpoints
- *
- * For demo purposes we use curated public-domain tracks, with a distinct
- * catalogue per provider so switching the source is visibly different.
- */
+interface ProviderState {
+  queue: Track[];
+  liked: Set<string>;
+  disliked: Set<string>;
+}
+
+/** Some providers (Deezer) work without any auth — they don't need a
+ * ProviderSession. We treat them as "always available". */
+const ANONYMOUS_PROVIDERS: ReadonlySet<MusicProvider> = new Set<MusicProvider>([
+  'deezer',
+]);
+
 @Injectable()
 export class MusicService {
-  private readonly catalogues: Record<MusicProvider, Track[]> = {
-    qq: [
-      {
-        id: 'qq-1',
-        provider: 'qq',
-        title: 'Clair de Lune',
-        artist: 'Claude Debussy',
-        album: 'Suite bergamasque',
-        coverUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/thumb/3/33/Claude_Debussy_ca_1908%2C_foto_av_F%C3%A9lix_Nadar.jpg/440px-Claude_Debussy_ca_1908%2C_foto_av_F%C3%A9lix_Nadar.jpg',
-        audioUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/7/75/Clair_de_lune_%28Debussy%29.ogg',
-        duration: 302,
-        liked: false,
-      },
-      {
-        id: 'qq-2',
-        provider: 'qq',
-        title: 'Gymnop\u00e9die No. 1',
-        artist: 'Erik Satie',
-        album: 'Trois Gymnop\u00e9dies',
-        coverUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/thumb/4/4f/Erik_Satie_en_1909.jpg/440px-Erik_Satie_en_1909.jpg',
-        audioUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/e/ee/Erik_Satie_-_gymnop%C3%A9die_no.1.ogg',
-        duration: 190,
-        liked: false,
-      },
-      {
-        id: 'qq-3',
-        provider: 'qq',
-        title: 'Nocturne Op. 9 No. 2',
-        artist: 'Fr\u00e9d\u00e9ric Chopin',
-        album: 'Nocturnes',
-        coverUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/thumb/e/e8/Frederic_Chopin_photo.jpeg/440px-Frederic_Chopin_photo.jpeg',
-        audioUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/e/e3/Frederic_Chopin_-_nocturne_op._9_no._2.ogg',
-        duration: 271,
-        liked: false,
-      },
-      {
-        id: 'qq-4',
-        provider: 'qq',
-        title: 'Arabesque No. 1',
-        artist: 'Claude Debussy',
-        album: 'Deux Arabesques',
-        coverUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/thumb/3/33/Claude_Debussy_ca_1908%2C_foto_av_F%C3%A9lix_Nadar.jpg/440px-Claude_Debussy_ca_1908%2C_foto_av_F%C3%A9lix_Nadar.jpg',
-        audioUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/4/49/Claude_Debussy_-_Arabesque_No._1.ogg',
-        duration: 256,
-        liked: false,
-      },
-      {
-        id: 'qq-5',
-        provider: 'qq',
-        title: 'Moonlight Sonata',
-        artist: 'Ludwig van Beethoven',
-        album: 'Piano Sonata No. 14',
-        coverUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/thumb/6/6f/Beethoven.jpg/440px-Beethoven.jpg',
-        audioUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/3/32/Ludwig_van_Beethoven_-_Moonlight_Sonata.ogg',
-        duration: 360,
-        liked: false,
-      },
-      {
-        id: 'qq-6',
-        provider: 'qq',
-        title: 'Rêverie',
-        artist: 'Claude Debussy',
-        album: 'Rêverie',
-        coverUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/thumb/3/33/Claude_Debussy_ca_1908%2C_foto_av_F%C3%A9lix_Nadar.jpg/440px-Claude_Debussy_ca_1908%2C_foto_av_F%C3%A9lix_Nadar.jpg',
-        audioUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/0/09/Debussy_-_R%C3%AAverie.ogg',
-        duration: 240,
-        liked: false,
-      },
-    ],
-    netease: [
-      {
-        id: 'netease-1',
-        provider: 'netease',
-        title: 'The Four Seasons - Spring',
-        artist: 'Antonio Vivaldi',
-        album: 'Le quattro stagioni',
-        coverUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/thumb/b/b0/Vivaldi.jpg/440px-Vivaldi.jpg',
-        audioUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/9/9f/Vivaldi_Spring_mvt_1_Allegro_-_John_Harrison_violin.ogg',
-        duration: 205,
-        liked: false,
-      },
-      {
-        id: 'netease-2',
-        provider: 'netease',
-        title: 'Eine kleine Nachtmusik',
-        artist: 'W. A. Mozart',
-        album: 'Serenade No. 13',
-        coverUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/thumb/1/1e/Wolfgang-amadeus-mozart_1.jpg/440px-Wolfgang-amadeus-mozart_1.jpg',
-        audioUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/7/76/Mozart_-_Eine_kleine_Nachtmusik_-_1._Allegro.ogg',
-        duration: 348,
-        liked: false,
-      },
-      {
-        id: 'netease-3',
-        provider: 'netease',
-        title: 'Canon in D',
-        artist: 'Johann Pachelbel',
-        album: 'Canon and Gigue',
-        coverUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/thumb/8/82/Johann_Pachelbel.jpg/440px-Johann_Pachelbel.jpg',
-        audioUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/3/3e/Canon_in_D_Major.ogg',
-        duration: 360,
-        liked: false,
-      },
-      {
-        id: 'netease-4',
-        provider: 'netease',
-        title: 'Hungarian Dance No. 5',
-        artist: 'Johannes Brahms',
-        album: 'Hungarian Dances',
-        coverUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/thumb/6/6d/JohannesBrahms.jpg/440px-JohannesBrahms.jpg',
-        audioUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/c/c8/Brahms_Hungarian_Dance_No._5_in_G_minor.ogg',
-        duration: 156,
-        liked: false,
-      },
-      {
-        id: 'netease-5',
-        provider: 'netease',
-        title: 'Ave Maria',
-        artist: 'Franz Schubert',
-        album: 'Ellens dritter Gesang',
-        coverUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/Franz_Schubert_by_Wilhelm_August_Rieder_1875.jpg/440px-Franz_Schubert_by_Wilhelm_August_Rieder_1875.jpg',
-        audioUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/1/1d/Schubert_Ave_Maria.ogg',
-        duration: 270,
-        liked: false,
-      },
-      {
-        id: 'netease-6',
-        provider: 'netease',
-        title: 'Für Elise',
-        artist: 'Ludwig van Beethoven',
-        album: 'Bagatelle No. 25',
-        coverUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/thumb/6/6f/Beethoven.jpg/440px-Beethoven.jpg',
-        audioUrl:
-          'https://upload.wikimedia.org/wikipedia/commons/0/0b/Fur_Elise.ogg',
-        duration: 175,
-        liked: false,
-      },
-    ],
-  };
+  private readonly logger = new Logger(MusicService.name);
 
-  private readonly likedTrackIds: Record<MusicProvider, Set<string>> = {
-    qq: new Set<string>(),
-    netease: new Set<string>(),
-  };
+  constructor(
+    private readonly storage: StorageService,
+    private readonly qq: QqMusicProvider,
+    private readonly netease: NeteaseMusicProvider,
+    private readonly deezer: DeezerMusicProvider,
+  ) {}
 
-  private readonly playHistory: Record<MusicProvider, string[]> = {
-    qq: [],
-    netease: [],
-  };
-
-  getNextTrack(provider: MusicProvider): Track {
-    const tracks = this.catalogues[provider];
-    const history = this.playHistory[provider];
-    // Radio-style: pick a random track, avoid repeating the last played.
-    const lastPlayed = history[history.length - 1];
-    let candidates = tracks.filter((t) => t.id !== lastPlayed);
-    if (candidates.length === 0) {
-      candidates = tracks;
-    }
-    const track = candidates[Math.floor(Math.random() * candidates.length)];
-    history.push(track.id);
-    if (history.length > 50) {
-      this.playHistory[provider] = history.slice(-20);
-    }
-    return { ...track, liked: this.likedTrackIds[provider].has(track.id) };
+  private stateKey(sessionId: string): string {
+    return `music:${sessionId}`;
   }
 
-  likeTrack(
+  private loadState(session: Session): Record<MusicProvider, ProviderState> {
+    const persisted = this.storage.get<Record<MusicProvider, ProviderState>>(
+      this.stateKey(session.id),
+    );
+    if (persisted) {
+      for (const key of Object.keys(persisted) as MusicProvider[]) {
+        const s = persisted[key];
+        if (Array.isArray((s.liked as unknown))) {
+          s.liked = new Set(s.liked as unknown as string[]);
+        }
+        if (Array.isArray((s.disliked as unknown))) {
+          s.disliked = new Set(s.disliked as unknown as string[]);
+        }
+      }
+      return persisted;
+    }
+    return {
+      qq: { queue: [], liked: new Set(), disliked: new Set() },
+      netease: { queue: [], liked: new Set(), disliked: new Set() },
+      deezer: { queue: [], liked: new Set(), disliked: new Set() },
+    };
+  }
+
+  private saveState(session: Session, state: Record<MusicProvider, ProviderState>): void {
+    const serializable = {
+      qq: { ...state.qq, liked: [...state.qq.liked], disliked: [...state.qq.disliked] },
+      netease: {
+        ...state.netease,
+        liked: [...state.netease.liked],
+        disliked: [...state.netease.disliked],
+      },
+      deezer: {
+        ...state.deezer,
+        liked: [...state.deezer.liked],
+        disliked: [...state.deezer.disliked],
+      },
+    } as unknown as Record<MusicProvider, ProviderState>;
+    this.storage.set(this.stateKey(session.id), serializable);
+  }
+
+  private requireProviderSession(
+    session: Session,
+    provider: MusicProvider,
+  ): ProviderSession | undefined {
+    if (ANONYMOUS_PROVIDERS.has(provider)) return undefined;
+    const ps = session.providers[provider];
+    if (!ps) {
+      throw new NotFoundException(`Not logged in to ${provider}`);
+    }
+    return ps;
+  }
+
+  private async refillQueue(
+    session: Session,
+    provider: MusicProvider,
+    state: Record<MusicProvider, ProviderState>,
+  ): Promise<void> {
+    const ps = this.requireProviderSession(session, provider);
+    let batch: Track[];
+    if (provider === 'qq') {
+      if (!ps || !this.qq.isConfigured(ps)) {
+        throw new BadRequestException('QQ session not configured');
+      }
+      batch = await this.qq.fetchRadioBatch(ps);
+    } else if (provider === 'netease') {
+      if (!ps || !this.netease.isConfigured(ps)) {
+        throw new BadRequestException('NetEase session not configured');
+      }
+      batch = await this.netease.fetchRadioBatch(ps);
+    } else {
+      // Deezer / future anonymous providers. Honour the user's preset
+      // (set via /music/deezer/preset) and default to 'all' = international
+      // pop. Storing it in the session keeps the picker persistent.
+      const preset = session.prefs?.deezerPreset ?? 'all';
+      batch = await this.deezer.fetchRadioBatch(ps as ProviderSession, preset);
+    }
+    const psState = state[provider];
+    batch = batch
+      .filter((t) => !psState.disliked.has(t.id))
+      .map((t) => {
+        // Deezer's preview URL is a hot-linkable mp3. We expose it
+        // directly (instead of routing through /music/stream/... like
+        // QQ/NetEase) because the audio element then loads it with the
+        // browser's own headers, and the cross-origin request is
+        // allowed by Deezer's CDN (Access-Control-Allow-Origin: *).
+        // The hdnea=… signature isn't strictly required to be honoured
+        // for the 30s clip — the server-side redirect path was an
+        // over-engineered workaround that turned out to break autoplay.
+        const audioUrl = provider === 'deezer' && t.audioUrl && t.audioUrl.startsWith('http')
+          ? t.audioUrl
+          : `/music/stream/${provider}/${encodeURIComponent(t.id)}`;
+        return {
+          ...t,
+          audioUrl,
+          liked: psState.liked.has(t.id),
+        };
+      });
+    psState.queue.push(...batch);
+    this.saveState(session, state);
+  }
+
+  /** Get the next track from the radio. Auto-refills if the queue is empty. */
+  async getNextTrack(session: Session, provider: MusicProvider): Promise<Track> {
+    const state = this.loadState(session);
+    const psState = state[provider];
+    while (psState.queue.length === 0) {
+      try {
+        await this.refillQueue(session, provider, state);
+      } catch (err) {
+        this.logger.warn(`refill failed: ${(err as Error).message}`);
+        // 兜底：返回一首占位让前端不卡死
+        return this.placeholder(provider, (err as Error).message);
+      }
+      if (psState.queue.length === 0) break;
+    }
+    const track = psState.queue.shift()!;
+    this.saveState(session, state);
+    return track;
+  }
+
+  /**
+   * Resolve a stream URL by track ID. We re-fetch from the provider every time
+   * because QQ/NetEase URLs expire within minutes. Deezer's preview URLs are
+   * already inlined into the track payload, but we still route through
+   * here for a consistent interface.
+   */
+  async getStreamUrl(
+    session: Session,
     provider: MusicProvider,
     trackId: string,
-  ): { success: boolean; liked: boolean } {
-    const liked = this.likedTrackIds[provider];
-    if (liked.has(trackId)) {
-      liked.delete(trackId);
-      return { success: true, liked: false };
+  ): Promise<string> {
+    const ps = this.requireProviderSession(session, provider);
+    if (provider === 'qq') {
+      return this.qq.getStreamPath(ps!, trackId);
     }
-    liked.add(trackId);
-    return { success: true, liked: true };
+    if (provider === 'netease') {
+      return this.netease.getStreamPath(ps!, trackId);
+    }
+    return this.deezer.getStreamPath(ps!, trackId);
   }
 
-  getLikedTracks(provider: MusicProvider): Track[] {
-    const liked = this.likedTrackIds[provider];
-    return this.catalogues[provider]
-      .filter((t) => liked.has(t.id))
-      .map((t) => ({ ...t, liked: true }));
+  async toggleLike(
+    session: Session,
+    provider: MusicProvider,
+    trackId: string,
+  ): Promise<{ success: boolean; liked: boolean }> {
+    const state = this.loadState(session);
+    const psState = state[provider];
+    const wasLiked = psState.liked.has(trackId);
+    if (wasLiked) {
+      psState.liked.delete(trackId);
+    } else {
+      psState.liked.add(trackId);
+    }
+    this.saveState(session, state);
+
+    // 同步到远端（best-effort，失败不影响本地）
+    const ps = session.providers[provider];
+    if (provider === 'netease' && ps?.musicU) {
+      try {
+        if (!wasLiked) await this.netease.like(ps, trackId);
+        // 取消红心不需要远程通知
+      } catch (err) {
+        this.logger.warn(
+          `netease like sync failed: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    return { success: true, liked: !wasLiked };
+  }
+
+  async markDisliked(
+    session: Session,
+    provider: MusicProvider,
+    trackId: string,
+  ): Promise<{ success: boolean }> {
+    const state = this.loadState(session);
+    state[provider].disliked.add(trackId);
+    state[provider].liked.delete(trackId);
+    this.saveState(session, state);
+
+    const ps = session.providers[provider];
+    if (provider === 'netease' && ps?.musicU) {
+      try {
+        await this.netease.unlike(ps, trackId);
+      } catch (err) {
+        this.logger.warn(
+          `netease trash sync failed: ${(err as Error).message}`,
+        );
+      }
+    }
+    return { success: true };
+  }
+
+  async getLikedTracks(
+    session: Session,
+    provider: MusicProvider,
+  ): Promise<Track[]> {
+    const state = this.loadState(session);
+    const psState = state[provider];
+    // 简化：返回 liked 集合里的占位记录，真实元数据需要按需拉
+    return [...psState.liked].map((id) => ({
+      id,
+      provider,
+      title: '(已收藏)',
+      artist: '',
+      album: '',
+      coverUrl: '',
+      audioUrl: `/music/stream/${provider}/${encodeURIComponent(id)}`,
+      duration: 0,
+      liked: true,
+    }));
+  }
+
+  /** When the provider is unavailable, return a minimal placeholder so the UI
+   * doesn't appear broken. */
+  private placeholder(
+    provider: MusicProvider,
+    reason: string,
+  ): Track {
+    return {
+      id: `placeholder-${Date.now()}`,
+      provider,
+      title: '暂时没有可播放的曲目',
+      artist: reason,
+      album: '',
+      coverUrl: '',
+      audioUrl: '',
+      duration: 0,
+      liked: false,
+    };
   }
 }
