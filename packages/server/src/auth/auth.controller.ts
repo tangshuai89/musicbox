@@ -6,6 +6,7 @@ import {
   Query,
   Req,
   Res,
+  Logger,
   BadRequestException,
 } from '@nestjs/common';
 import { normalizeProvider } from '../common/provider';
@@ -16,6 +17,8 @@ import { SessionService } from '../common/session';
 
 @Controller('auth')
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name);
+
   constructor(
     private readonly qq: QqAuthStrategy,
     private readonly netease: NeteaseAuthStrategy,
@@ -87,6 +90,9 @@ export class AuthController {
     if (result.code === 803 && result.session) {
       const session = this.sessionService.resolve(req, res);
       this.sessionService.setProvider(session, 'netease', result.session);
+      this.logger.log(
+        `netease login OK → session=${session.id.slice(0, 8)}… nickname=${result.session.nickname}`,
+      );
       return {
         code: 803,
         message: result.message,

@@ -7,6 +7,7 @@ import {
   getAuthStatus,
   logout,
   loginQqCookie,
+  loginNeteaseCookie,
   PROVIDER_LABELS,
   QQ_QUALITY_LABELS,
 } from './api';
@@ -493,9 +494,44 @@ export default function App() {
    * NetEase login: 服务端生成二维码，手机网易云 App 扫码确认，服务端轮询
    * 拿到 MUSIC_U 入 session。浏览器和 Electron 统一走这个弹窗。
    */
-  const handleNeteaseLogin = () => {
+  /**
+   * NetEase login. In Electron, open an embedded music.163.com login window and
+   * capture MUSIC_U from its real Chromium session — this is the only reliable
+   * path, because NetEase risk control (QR-check code 8821) rejects
+   * server-side QR-login polling. In a plain browser (no cookie capture), fall
+   * back to the QR modal, which also offers a manual "paste MUSIC_U" entry.
+   */
+  const handleNeteaseLogin = async () => {
     setError(null);
-    setShowCookieFallback(true);
+    if (!isElectron || !window.electronAPI?.neteaseLogin) {
+      setShowCookieFallback(true);
+      return;
+    }
+    setLoggingIn(true);
+    try {
+      const result = await window.electronAPI.neteaseLogin();
+      if (!result.success || !result.musicU) {
+        setError(
+          result.error === 'login_cancelled'
+            ? '登录已取消'
+            : result.error ?? '登录失败',
+        );
+        return;
+      }
+      const r = await loginNeteaseCookie(
+        result.musicU,
+        result.csrfToken,
+        result.extraCookies,
+      );
+      if (r.success) {
+        setAuth({ provider: 'netease', loggedIn: true, user: r.user });
+        loadNextTrack();
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoggingIn(false);
+    }
   };
 
   /**
