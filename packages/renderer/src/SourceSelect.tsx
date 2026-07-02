@@ -15,17 +15,12 @@ const SOURCES: {
   disabled?: boolean;
   disabledReason?: string;
 }[] = [
-  // 网易云音源暂时关闭。2024-2025 期间 NetEase 升级了 weapi 反爬，
-  // 直接 fetch / page-context fetch / session.fetch + X-Real-IP 三种
-  // 路径都返回 200 + 空 body。等后续上 unblockneteasemusic 路线再开。
   {
     provider: 'netease',
     name: '网易云音乐',
-    desc: '私人 FM 电台（暂时不可用）',
+    desc: '私人 FM 电台 · 手机扫码登录',
     className: 'source-netease',
     initial: '云',
-    disabled: true,
-    disabledReason: 'NetEase 升级了 weapi 反爬，等待 unblockneteasemusic 路线',
   },
   {
     provider: 'qq',
