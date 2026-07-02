@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Track } from './music.service';
+import { type LyricLine, parseLrc } from '../common/lyrics';
 import { ProviderSession } from '../common/session';
 
 /**
@@ -179,5 +180,63 @@ export class DeezerMusicProvider {
       duration: Math.round(t.duration),
       liked: false,
     };
+  }
+
+  /**
+   * Fetch lyrics for a Deezer track. Deezer exposes lyrics via the
+   * public API at `/track/{id}` — the response has either:
+   *   - `lyrics.data[*].text`  — unsynced plain text (one string per
+   *     line, no timestamps)
+   *   - `lyrics.data[*].syncText[*]` — synced LRC body (LRC format
+   *     with [mm:ss.xx] tags) when the rights-holder uploaded them.
+   *
+   * NetEase LRC parsing is reused for the synced format. If only
+   * unsynced text is available, we synthesise a LyricLine[] with a
+   * single placeholder entry so the renderer can still show
+   * something rather than the "no lyrics" state.
+   */
+  async getLyrics(trackId: string): Promise<LyricLine[] | null> {
+    try {
+      const res = await fetch(`https://api.deezer.com/track/${trackId}`);
+      if (!res.ok) return null;
+      const data = (await res.json()) as {
+        lyrics?: {
+          data?: Array<{
+            text?: string;
+            syncText?: string;
+          }>;
+        };
+      };
+      const entries = data.lyrics?.data ?? [];
+      // Try synced first — much better UX than unsynced.
+      for (const entry of entries) {
+        if (entry.syncText) {
+          // Deezer's syncText is LRC-formatted; use the shared
+          // parseLrc from common/lyrics.ts (same format as NetEase:
+          // [mm:ss.xx] timestamps at the start of each line).
+          const parsed = parseLrc(entry.syncText);
+          if (parsed && parsed.length > 0) return parsed;
+        }
+      }
+      // Fall back to unsynced plain text — show as a single block
+      // line at time=0 so the user still sees the lyrics.
+      for (const entry of entries) {
+        if (entry.text) {
+          // Split on newlines so each verse is its own line.
+          const verses = entry.text
+            .split(/\r?\n/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+          if (verses.length === 0) continue;
+          return verses.map((text, i) => ({ time: i, text }));
+        }
+      }
+      return null;
+    } catch (err) {
+      this.logger.warn(
+        `deezer lyrics fetch failed for ${trackId}: ${(err as Error).message}`,
+      );
+      return null;
+    }
   }
 }

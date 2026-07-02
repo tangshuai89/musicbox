@@ -1,6 +1,7 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { Track } from './music.service';
 import { ProviderSession } from '../common/session';
+import { type LyricLine, parseLrc } from '../common/lyrics';
 
 /** QQ 音质档位。standard=m4a(默认)，high=320mp3，lossless=flac（需会员）。 */
 export type QqQuality = 'standard' | 'high' | 'lossless';
@@ -337,5 +338,64 @@ export class QqMusicProvider {
     return Array.from({ length: 32 }, () =>
       Math.floor(Math.random() * 16).toString(16),
     ).join('');
+  }
+
+  /**
+   * Fetch synced lyrics for a QQ song. Endpoint:
+   *   GET c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg
+   *       ?songmid={mid}&format=json&nobase64=1&g_tk=5381
+   *
+   * The `Referer: y.qq.com` header is mandatory — without it QQ returns
+   * code 2001 (invalid request). `nobase64=1` asks for a plain LRC body
+   * instead of base64; we still base64-decode as a fallback in case the
+   * flag is ignored. The response is occasionally JSONP-wrapped
+   * (`MusicJsonCallback({...})`) even with format=json, so we strip any
+   * callback wrapper before parsing.
+   *
+   * Returns null when the song has no lyrics or the request fails — the
+   * controller/service treats null as "暂无歌词".
+   */
+  async getLyrics(
+    session: ProviderSession,
+    songmid: string,
+  ): Promise<LyricLine[] | null> {
+    const url = new URL(
+      'https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg',
+    );
+    url.searchParams.set('songmid', songmid);
+    url.searchParams.set('format', 'json');
+    url.searchParams.set('nobase64', '1');
+    url.searchParams.set('g_tk', '5381');
+
+    const res = await fetch(url.toString(), {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+        Referer: 'https://y.qq.com/',
+        Cookie: session.qqCookie ?? '',
+      },
+    });
+    const text = await res.text();
+    // Strip a JSONP callback wrapper if present: `foo({...})` → `{...}`.
+    const jsonStr = text.replace(/^[^{]*(\{[\s\S]*\})[^}]*$/, '$1');
+    let data: { code?: number; lyric?: string };
+    try {
+      data = JSON.parse(jsonStr) as { code?: number; lyric?: string };
+    } catch {
+      this.logger.warn(`QQ lyric parse failed for ${songmid}`);
+      return null;
+    }
+    if (!data.lyric) return null;
+    // nobase64=1 should give plain LRC, but if we still got base64
+    // (no '[' timestamp brackets, looks like base64), decode it.
+    let lrc = data.lyric;
+    if (!lrc.includes('[') && /^[A-Za-z0-9+/=\s]+$/.test(lrc)) {
+      try {
+        lrc = Buffer.from(lrc, 'base64').toString('utf-8');
+      } catch {
+        /* leave as-is */
+      }
+    }
+    return parseLrc(lrc);
   }
 }

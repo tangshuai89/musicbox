@@ -222,3 +222,21 @@ export async function loginNeteaseCookie(
     }),
   );
 }
+
+export interface LyricLine {
+  time: number;
+  text: string;
+}
+
+export async function fetchLyrics(
+  provider: MusicProvider,
+  trackId: string,
+): Promise<LyricLine[] | null> {
+  const res = await fetch(
+    `${API_BASE}/music/lyrics?provider=${provider}&trackId=${encodeURIComponent(trackId)}`,
+    { credentials: 'include' },
+  );
+  if (!res.ok) return null;
+  const data = (await res.json()) as { lyrics: LyricLine[] | null };
+  return data.lyrics ?? null;
+}
