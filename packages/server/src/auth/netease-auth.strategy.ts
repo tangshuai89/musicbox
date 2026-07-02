@@ -80,11 +80,19 @@ export class NeteaseAuthStrategy {
       },
     );
     const json = (await res.json()) as { code: number; message?: string };
+    this.logger.log(`netease qr check key=${key.slice(0, 8)}… → code=${json.code}`);
     if (json.code !== 803) {
       return { code: json.code, message: json.message ?? '' };
     }
 
-    const setCookies = res.headers.getSetCookie();
+    // 803 = authorised. The MUSIC_U / __csrf cookies come back in Set-Cookie.
+    // getSetCookie() returns one entry per Set-Cookie header (the correct way —
+    // a single combined header can't be split on commas because expiry dates
+    // contain commas).
+    const setCookies =
+      typeof res.headers.getSetCookie === 'function'
+        ? res.headers.getSetCookie()
+        : [];
     const cookies: Record<string, string> = {};
     for (const line of setCookies) {
       const [pair] = line.split(';');
@@ -93,14 +101,18 @@ export class NeteaseAuthStrategy {
         cookies[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
       }
     }
+    this.logger.log(
+      `netease qr 803: ${setCookies.length} set-cookie header(s), names=[${Object.keys(cookies).join(',')}]`,
+    );
     const musicU = cookies['MUSIC_U'];
     const csrfToken = cookies['__csrf'] ?? '';
     if (!musicU) {
       this.logger.error(
-        `netease qr 803 but no MUSIC_U in set-cookie (got: ${Object.keys(cookies).join(',')})`,
+        `netease qr 803 but no MUSIC_U in set-cookie (got: ${Object.keys(cookies).join(',') || '<none>'})`,
       );
       throw new BadRequestException('登录成功但未取到 MUSIC_U，请重试');
     }
+    this.logger.log(`netease qr 803: captured MUSIC_U (len=${musicU.length})`);
 
     const profile = await this.fetchProfile(musicU, csrfToken);
     return {

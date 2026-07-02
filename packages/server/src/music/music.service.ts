@@ -176,7 +176,9 @@ export class MusicService {
       try {
         await this.refillQueue(session, provider, state);
       } catch (err) {
-        this.logger.warn(`refill failed: ${(err as Error).message}`);
+        this.logger.warn(
+          `refill failed (session=${session.id.slice(0, 8)}…, provider=${provider}): ${(err as Error).message}`,
+        );
         // 兜底：返回一首占位让前端不卡死
         return this.placeholder(provider, (err as Error).message);
       }

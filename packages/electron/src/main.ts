@@ -17,6 +17,12 @@ let activeQqLoginWindow: BrowserWindow | null = null;
 /** IPC response channel for cookie-based login (QQ Music). */
 const QQ_LOGIN_CHANNEL = 'qq-login-result';
 
+/** The NetEase login window (embedded-browser cookie capture). */
+let activeNeteaseLoginWindow: BrowserWindow | null = null;
+
+/** IPC response channel for cookie-based login (NetEase). */
+const NETEASE_LOGIN_CHANNEL = 'netease-login-result';
+
 /** Cookie polling interval for the login window (cookie 'changed' events
  * don't always fire reliably across redirects). */
 const POLL_INTERVAL_MS = 1500;
@@ -252,11 +258,173 @@ function openQqLoginWindow(): Promise<QqLoginResult> {
   });
 }
 
+// ── NetEase login via embedded browser ─────────────────────────────────────
+//
+// NetEase risk control (QR-check code 8821) rejects server-side login polling:
+// it accepts the phone scan but refuses to hand a login cookie to an untrusted
+// server caller. The reliable desktop path is to let the user sign in inside a
+// real Chromium window and capture MUSIC_U from its session — same shape as the
+// QQ flow above.
+
+interface NeteaseLoginResult {
+  musicU: string;
+  csrfToken?: string;
+  /** All captured NetEase cookies, forwarded for parity with a real browser. */
+  extraCookies?: Record<string, string>;
+}
+
+/** NetEase login cookies live on the music.163.com hosts. */
+const NETEASE_DOMAINS = ['.music.163.com', 'music.163.com'];
+
+/** A logged-out MUSIC_U placeholder is short; a real one is long. Wait for a
+ * value that's clearly the post-login cookie. */
+const MIN_MUSIC_U_LENGTH = 30;
+
+async function readNeteaseCookies(win: BrowserWindow): Promise<{
+  musicU?: string;
+  csrf?: string;
+  all: Record<string, string>;
+}> {
+  const all: Record<string, string> = {};
+  let musicU: string | undefined;
+  let csrf: string | undefined;
+  const seen = new Set<string>();
+  for (const domain of NETEASE_DOMAINS) {
+    let cookies;
+    try {
+      cookies = await win.webContents.session.cookies.get({ domain });
+    } catch {
+      continue;
+    }
+    for (const c of cookies) {
+      if (!c.name || seen.has(c.name)) continue;
+      seen.add(c.name);
+      if (c.expirationDate && c.expirationDate * 1000 < Date.now()) continue;
+      all[c.name] = c.value;
+      if (c.name === 'MUSIC_U' && c.value.length >= MIN_MUSIC_U_LENGTH) {
+        musicU = c.value;
+      }
+      if (c.name === '__csrf') csrf = c.value;
+    }
+  }
+  return { musicU, csrf, all };
+}
+
+/**
+ * Open a child window on music.163.com/login, let the user sign in (the
+ * NetEase page's own QR, phone, or password — all in a real browser NetEase
+ * trusts), and resolve once MUSIC_U appears in the window's session cookies.
+ */
+function openNeteaseLoginWindow(): Promise<NeteaseLoginResult> {
+  return new Promise((resolve, reject) => {
+    if (activeNeteaseLoginWindow && !activeNeteaseLoginWindow.isDestroyed()) {
+      activeNeteaseLoginWindow.show();
+      activeNeteaseLoginWindow.focus();
+      return;
+    }
+
+    const loginWin = new BrowserWindow({
+      width: 1000,
+      height: 760,
+      minWidth: 720,
+      minHeight: 540,
+      title: '登录网易云音乐',
+      parent: mainWindow ?? undefined,
+      modal: false,
+      backgroundColor: '#ffffff',
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+      },
+    });
+    activeNeteaseLoginWindow = loginWin;
+
+    loginWin.webContents.setWindowOpenHandler(() => ({ action: 'allow' }));
+    loginWin.loadURL('https://music.163.com/login');
+
+    let resolved = false;
+    let pollTimer: NodeJS.Timeout | null = null;
+
+    const stop = (): void => {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    };
+
+    const finish = (result: NeteaseLoginResult): void => {
+      if (resolved) return;
+      resolved = true;
+      stop();
+      console.log(
+        `[netease-login] captured MUSIC_U (len=${result.musicU.length}), ${
+          Object.keys(result.extraCookies ?? {}).length
+        } cookies`,
+      );
+      if (!loginWin.isDestroyed()) loginWin.hide();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(NETEASE_LOGIN_CHANNEL, result);
+      }
+      resolve(result);
+    };
+
+    const fail = (err: Error): void => {
+      if (resolved) return;
+      resolved = true;
+      stop();
+      if (!loginWin.isDestroyed()) loginWin.close();
+      if (activeNeteaseLoginWindow === loginWin) activeNeteaseLoginWindow = null;
+      reject(err);
+    };
+
+    const tryCapture = async (): Promise<void> => {
+      if (resolved || loginWin.isDestroyed()) return;
+      try {
+        const { musicU, csrf, all } = await readNeteaseCookies(loginWin);
+        if (musicU) finish({ musicU, csrfToken: csrf, extraCookies: all });
+      } catch {
+        // ignore — next tick retries
+      }
+    };
+
+    const cookieListener = (
+      _event: unknown,
+      cookie: Electron.Cookie,
+      _cause: string,
+      removed: boolean,
+    ): void => {
+      if (removed) return;
+      if (!(cookie.domain ?? '').includes('163.com')) return;
+      if (cookie.name === 'MUSIC_U' && cookie.value.length >= MIN_MUSIC_U_LENGTH) {
+        void tryCapture();
+      }
+    };
+    loginWin.webContents.session.cookies.on('changed', cookieListener);
+
+    // Polling fallback — cookie 'changed' can miss updates after redirects.
+    pollTimer = setInterval(() => void tryCapture(), POLL_INTERVAL_MS);
+
+    loginWin.on('closed', () => {
+      if (activeNeteaseLoginWindow === loginWin) activeNeteaseLoginWindow = null;
+      if (!resolved) fail(new Error('login_cancelled'));
+    });
+  });
+}
+
 // ── IPC wiring ──────────────────────────────────────────────────────────────
 
 ipcMain.handle('qq:login', async () => {
   try {
     const result = await openQqLoginWindow();
+    return { success: true, ...result };
+  } catch (err) {
+    return { success: false, error: (err as Error).message };
+  }
+});
+
+ipcMain.handle('netease:login', async () => {
+  try {
+    const result = await openNeteaseLoginWindow();
     return { success: true, ...result };
   } catch (err) {
     return { success: false, error: (err as Error).message };

@@ -22,11 +22,23 @@ export interface QqLoginResponse {
   error?: string;
 }
 
+export interface NeteaseLoginResponse {
+  success: boolean;
+  musicU?: string;
+  csrfToken?: string;
+  extraCookies?: Record<string, string>;
+  error?: string;
+}
+
 const electronAPI = {
   platform: process.platform,
 
   /** Open a QQ Music login window; resolves when the login cookie is captured. */
   qqLogin: (): Promise<QqLoginResponse> => ipcRenderer.invoke('qq:login'),
+
+  /** Open a NetEase login window; resolves when MUSIC_U is captured. */
+  neteaseLogin: (): Promise<NeteaseLoginResponse> =>
+    ipcRenderer.invoke('netease:login'),
 
   /** Subscribe to QQ login-completed events. */
   onQqLoginSuccess: (cb: (r: QqLoginResult) => void): (() => void) => {

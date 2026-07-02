@@ -30,6 +30,13 @@ export default function NeteaseCookieModal({ onSuccess, onClose }: Props) {
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stoppedRef = useRef(false);
+  // Keep the latest onSuccess in a ref so beginQrFlow doesn't depend on it.
+  // onSuccess is a new function on every parent render; if it were a dep, the
+  // mount effect would re-run each render, fetch a fresh unikey, and swap the
+  // QR image — the code "flashed" constantly and the phone could never finish
+  // scanning. With the ref, the QR is generated once and stays stable.
+  const onSuccessRef = useRef(onSuccess);
+  onSuccessRef.current = onSuccess;
 
   const beginQrFlow = useCallback(async () => {
     setExpired(false);
@@ -47,7 +54,7 @@ export default function NeteaseCookieModal({ onSuccess, onClose }: Props) {
           const r = await checkNeteaseQr(key);
           if (r.code === 803 && r.user) {
             setStatus('登录成功');
-            onSuccess(r.user);
+            onSuccessRef.current(r.user);
             return;
           }
           if (r.code === 800) {
@@ -68,7 +75,7 @@ export default function NeteaseCookieModal({ onSuccess, onClose }: Props) {
       setError((e as Error).message);
       setStatus('二维码生成失败');
     }
-  }, [onSuccess]);
+  }, []);
 
   useEffect(() => {
     stoppedRef.current = false;
