@@ -29,10 +29,14 @@ const POLL_INTERVAL_MS = 1500;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 400,
-    height: 600,
-    minWidth: 360,
-    minHeight: 520,
+    // 880×720 hits the Bento sweet spot: wide enough for cover +
+    // side column to coexist at ~16:13, tall enough that the cover
+    // has room to breathe and the transport row doesn't crowd
+    // the progress bar. The user can still resize freely.
+    width: 880,
+    height: 720,
+    minWidth: 640,
+    minHeight: 560,
     // No maxWidth — let power users size up; UI uses responsive layout.
     titleBarStyle: 'hiddenInset',
     // macOS traffic-light buttons live in the top-left. The renderer

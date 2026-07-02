@@ -10,6 +10,7 @@ import { ProviderSession, Session } from '../common/session';
 import { QqMusicProvider, QqQuality } from './qq.provider';
 import { NeteaseMusicProvider } from './netease.provider';
 import { DeezerMusicProvider } from './deezer.provider';
+import { type LyricLine } from '../common/lyrics';
 
 export interface Track {
   id: string;
@@ -334,6 +335,52 @@ export class MusicService {
       duration: 0,
       liked: true,
     }));
+  }
+
+  /**
+   * Fetch synced lyrics for a track. Returns null when the provider
+   * doesn't expose lyrics (QQ — public lyric API is gated behind
+   * signature) or when the track has no lyric data (instrumental,
+   * newer releases, region restrictions).
+   *
+   * Per-provider quirks:
+   *  - NetEase: GET /api/song/lyric returns a flat { lyric, tlyric }
+   *    structure where `lyric` is the LRC body. We parse it into
+   *    LyricLine[] (translation strings tacked onto the matching
+   *    line are out of scope for v1).
+   *  - Deezer: /track/{id} includes `lyrics` (plain text only, no
+   *    timestamps) when the rights-holder uploaded them. We try to
+   *    match the Deezer `track_lyrics` style of unsynced lyrics via
+   *    a separate endpoint that does exist but returns the timestamp
+   *    format we want. Falls back to null otherwise.
+   *  - QQ: GET c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg with a
+   *    y.qq.com Referer returns the LRC body (trackId here is the
+   *    songmid). Works anonymously; the session cookie is passed through
+   *    when present but isn't required.
+   */
+  async getLyrics(
+    session: Session,
+    provider: MusicProvider,
+    trackId: string,
+  ): Promise<LyricLine[] | null> {
+    try {
+      if (provider === 'netease') {
+        const ps = this.requireProviderSession(session, provider);
+        if (!ps) return null;
+        return await this.netease.getLyrics(ps, trackId);
+      }
+      if (provider === 'deezer') {
+        return await this.deezer.getLyrics(trackId);
+      }
+      // QQ: lyrics work anonymously; pass the session cookie if we have
+      // one (harmless) but fall back to an empty session otherwise.
+      return await this.qq.getLyrics(session.providers.qq ?? {}, trackId);
+    } catch (err) {
+      this.logger.warn(
+        `lyrics fetch failed (${provider}/${trackId}): ${(err as Error).message}`,
+      );
+      return null;
+    }
   }
 
   /** When the provider is unavailable, return a minimal placeholder so the UI

@@ -1,5 +1,6 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { Track } from './music.service';
+import { type LyricLine, parseLrc } from '../common/lyrics';
 import { ProviderSession } from '../common/session';
 import { QqQuality } from './qq.provider';
 
@@ -301,5 +302,48 @@ export class NeteaseMusicProvider {
         `网易云返回非 JSON（status=${status}，bodyLen=${text.length}）`,
       );
     }
+  }
+
+  /**
+   * Fetch synced lyrics for a NetEase song. Endpoint:
+   *   GET /api/song/lyric?id={songId}&lv=1&kv=1&tv=-1
+   * Returns { lyric: "<LRC body>", tlyric?: "<translation LRC>" }.
+   * We only parse the main `lyric` for v1 — translations can be
+   * added later by aligning `tlyric` lines to `lyric` time tags.
+   *
+   * The `lv` / `kv` / `tv` params select:
+   *   lv=1: lyrics (original)
+   *   kv=1: karaoke-style word-by-word timing (we ignore for v1)
+   *   tv=-1: no translation
+   * Sending tv=-1 keeps the response small when we don't translate.
+   *
+   * Returns null when:
+   *   - The response has no `lyric` field (instrumental, etc.)
+   *   - The lyric body has no parseable timestamps (only [ti:] / [ar:]
+   *     metadata lines, no time tags → treat as no synced lyrics)
+   *   - The API call fails for any reason (the controller catches
+   *     and the UI shows "暂无歌词").
+   */
+  async getLyrics(
+    session: ProviderSession,
+    songId: string,
+  ): Promise<LyricLine[] | null> {
+    interface LyricResponse {
+      lyric?: string;
+      tlyric?: string;
+      code?: number;
+    }
+    const data = await this.apiCall<LyricResponse>(
+      session,
+      'https://music.163.com/api/song/lyric',
+      {
+        id: String(songId),
+        lv: '1',
+        kv: '1',
+        tv: '-1',
+      },
+    );
+    if (!data.lyric) return null;
+    return parseLrc(data.lyric);
   }
 }

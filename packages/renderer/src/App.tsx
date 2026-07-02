@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, type RefObject } from 'react';
 import {
   fetchNextTrack,
   fetchDeezerEditorials,
@@ -8,6 +8,7 @@ import {
   logout,
   loginQqCookie,
   loginNeteaseCookie,
+  fetchLyrics,
   PROVIDER_LABELS,
   QQ_QUALITY_LABELS,
 } from './api';
@@ -18,11 +19,13 @@ import type {
   AuthUser,
   DeezerEditorial,
   QqQuality,
+  LyricLine,
 } from './api';
 import SourceSelect from './SourceSelect';
 import NeteaseCookieModal from './NeteaseCookieModal';
 import SearchPanel from './SearchPanel';
 import ErrorPanel from './ErrorPanel';
+import LyricsPanel from './LyricsPanel';
 import './App.css';
 
 const PROVIDER_STORAGE_KEY = 'music-provider';
@@ -40,25 +43,53 @@ function formatTime(seconds: number): string {
  *   2. the --cover-accent + --cover-glow custom properties on
  *      :root (consumed by the cover's outer halo).
  *
- * To dodge cross-origin tainting we use a fetch + createImageBitmap
- * pipeline (with `mode: 'cors'`), which gives us a clean canvas
- * even for Deezer CDN covers. The Image element we create isn't
- * attached to the DOM — it's a pure data path.
+ * CORS: cover CDNs (QQ's y.gtimg.cn in particular) don't return
+ * Access-Control-Allow-Origin, which kills the canvas drawImage →
+ * getImageData path (the canvas ends up "tainted" and pixel reads
+ * throw). We route both the JS fetch AND the background-image URLs
+ * through our server's /music/cover-proxy, which fetches the image
+ * server-side and re-emits it with CORS headers. One cached response
+ * serves both consumers. The original `url` stays as `track.coverUrl`
+ * for use cases that don't need pixel access (e.g. SearchPanel
+ * thumbnails use <img src> directly).
+ *
+ * The fallback path below still tries the original URL via plain
+ * `fetch` (no CORS mode) — for CDNs that happen to allow it, we save
+ * a server round-trip. If that throws, we fall through to background-
+ * image only and skip colour extraction.
  */
 async function applyCoverImage(
   url: string,
-  bgLayer: HTMLDivElement | null,
-  coverBackdrop: HTMLDivElement | null,
+  bgLayerRef: RefObject<HTMLDivElement | null>,
+  coverBackdropRef: RefObject<HTMLDivElement | null>,
+  epoch: number,
+  epochRef: RefObject<number>,
 ): Promise<void> {
+  // Build the proxied URL once. In dev (Vite on :5173) the renderer
+  // hits /api/music/cover-proxy, which Vite's proxy rewrites to
+  // /music/cover-proxy on the NestJS server (:3200). See vite.config.ts.
+  const proxied = `/api/music/cover-proxy?url=${encodeURIComponent(url)}`;
+
   let bitmap: ImageBitmap;
   try {
-    const res = await fetch(url, { mode: 'cors' });
+    const res = await fetch(proxied);
+    // Cancelled: a newer presentTrack call has incremented the epoch
+    // while we were waiting. Bail out without touching any DOM — the
+    // newer call will set the correct cover.
+    if (epochRef.current !== epoch) return;
+    if (!res.ok) throw new Error(`proxy_http_${res.status}`);
     const blob = await res.blob();
+    if (epochRef.current !== epoch) return;
     bitmap = await createImageBitmap(blob);
   } catch {
-    // CORS-locked cover. We can still set the background-image (the
-    // browser is happy to render cross-origin <img>s) — we just can't
-    // extract the average colour. Fall back to a neutral dark accent.
+    // Cancelled by a newer presentTrack call while we were fetching.
+    if (epochRef.current !== epoch) return;
+    // Proxy failed (server down, host not allowlisted, upstream 5xx).
+    // We can still set the background-image with the ORIGINAL URL —
+    // the browser happily renders cross-origin <img>s without reading
+    // pixels — we just lose the colour extraction this time.
+    const coverBackdrop = coverBackdropRef.current;
+    const bgLayer = bgLayerRef.current;
     if (coverBackdrop) coverBackdrop.style.backgroundImage = `url(${url})`;
     if (bgLayer) bgLayer.style.backgroundImage = `url(${url})`;
     document.documentElement.style.setProperty('--cover-accent', '#1a1a1f');
@@ -84,32 +115,21 @@ async function applyCoverImage(
     );
   }
 
-  // 2) Set the cover as the bg-layer and the left-column backdrop
-  // (browser will fetch + cache the URL once for both).
+  // 2) Set the cover as the bg-layer and the left-column backdrop.
+  // Use the ORIGINAL url for CSS background-image (browser happily
+  // renders cross-origin images — no CORS needed for display).
+  // The proxied URL was only needed for the JS fetch above (canvas
+  // pixel read path). Trying to use it for CSS too adds a second
+  // server round-trip that can fail independently and leave the
+  // window background blank.
+  const coverBackdrop = coverBackdropRef.current;
+  const bgLayer = bgLayerRef.current;
   if (coverBackdrop) coverBackdrop.style.backgroundImage = `url(${url})`;
   if (bgLayer) bgLayer.style.backgroundImage = `url(${url})`;
 
   bitmap.close?.();
 }
 
-/**
- * Apply the user's saved theme override (or system default if none).
- * Called once on mount and after the user toggles the theme button.
- */
-function applyTheme(): 'dark' | 'light' {
-  const root = document.documentElement;
-  const saved = localStorage.getItem('musicbox:theme') as 'dark' | 'light' | null;
-  if (saved === 'dark' || saved === 'light') {
-    root.setAttribute('data-theme', saved);
-    return saved;
-  }
-  // No override — clear the explicit attr so the @media
-  // prefers-color-scheme rule takes over.
-  root.removeAttribute('data-theme');
-  return window.matchMedia('(prefers-color-scheme: light)').matches
-    ? 'light'
-    : 'dark';
-}
 
 function readStoredProvider(): MusicProvider | null {
   const stored = localStorage.getItem(PROVIDER_STORAGE_KEY);
@@ -117,6 +137,42 @@ function readStoredProvider(): MusicProvider | null {
     return stored;
   }
   return null;
+}
+
+/**
+ * Volume icon with four states — muted / low / mid / high — derived
+ * from (volume, muted). We pick the icon set rather than the slider
+ * position because the icon needs to remain readable at the tiny
+ * size we use it (14×14 px in the progress row).
+ *
+ * SVG paths from Material Design Icons (volume_off / volume_mute /
+ * volume_up variants) — re-used to keep the visual vocabulary
+ * consistent with the transport buttons (dislike / like / skip) which
+ * also use Material SVGs.
+ */
+function VolumeIcon({ volume, muted }: { volume: number; muted: boolean }) {
+  if (muted || volume === 0) {
+    return (
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">
+        {/* Speaker with a slash — explicit "audio off" state */}
+        <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z" />
+      </svg>
+    );
+  }
+  if (volume < 0.5) {
+    return (
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">
+        {/* Speaker alone, no waves — quiet */}
+        <path d="M7 9v6h4l5 5V4l-5 5H7z" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">
+      {/* Speaker + two waves — loud */}
+      <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z" />
+    </svg>
+  );
 }
 
 /** True when running inside the Electron shell (not just a browser tab). */
@@ -144,6 +200,9 @@ export default function App() {
   const [loggingIn, setLoggingIn] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
+  // Lyrics: fetched on track change, cleared on source switch.
+  const [lyrics, setLyrics] = useState<LyricLine[] | null>(null);
+  const [lyricsLoading, setLyricsLoading] = useState(false);
   const [qualityMenuOpen, setQualityMenuOpen] = useState(false);
   const QQ_QUALITY_KEY = 'musicbox:qq-quality';
   const [qqQuality, setQqQuality] = useState<QqQuality>(() => {
@@ -170,14 +229,72 @@ export default function App() {
   const [deezerEditorials, setDeezerEditorials] = useState<DeezerEditorial[]>([]);
   const audioRef = useRef<HTMLAudioElement>(null);
   const bgLayerRef = useRef<HTMLDivElement>(null);
+  // Web Audio graph — created lazily on the first play-button click
+  // (autoplay policy gates AudioContext + MediaElementSource creation
+  // to user gestures). Once created, the graph is reused for every
+  // track — MediaElementSource can only be created once per element.
+  //
+  // `analyser` is **state**, not a ref. The Visualizer component reads
+  // it as a prop, so its useEffect needs a real re-render to fire when
+  // the graph comes online. A ref would only flip after the fact and
+  // the Visualizer would be stuck on its initial `null` prop forever
+  // — and so would its canvas draw loop. (Ref would only work if we
+  // also had a "graph ready" state flag forcing a re-render; making
+  // the value itself state is simpler and correct.)
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  // The single MediaElementAudioSourceNode for the <audio> element.
+  // createMediaElementSource throws if called twice on the same element,
+  // so we create it once and cache it here across graph rebuilds.
+  const mediaSrcRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
   // The left-side cover-art container. We use a div + background-image
   // (rather than an <img>) so the cover can fill its column edge-to-edge
   // without distorting or showing letterboxing.
   const coverBackdropRef = useRef<HTMLDivElement>(null);
-  // Theme: 'dark' | 'light' | 'system'. 'system' is the default —
-  // the UI follows `prefers-color-scheme` and we don't write a
-  // data-theme attribute. The user's explicit pick is stored in
-  // localStorage so it sticks across restarts.
+  // Epoch counter for applyCoverImage cancellation. Incremented on
+  // every presentTrack call so in-flight async fetches from a stale
+  // call can detect they've been superseded and bail out.
+  const coverEpochRef = useRef(0);
+  // Volume: persisted to localStorage as {volume, muted}. We keep
+  // `muted` separate from `volume` so unmuting restores the user's
+  // previous level — a single boolean toggle, no "saved-volume" hack.
+  // The slider's effective output is `muted ? 0 : volume`, applied
+  // to <audio>.volume in the effect below.
+  const VOLUME_KEY = 'musicbox:volume';
+  const [volume, setVolume] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem(VOLUME_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (
+          typeof parsed?.volume === 'number' &&
+          parsed.volume >= 0 &&
+          parsed.volume <= 1
+        ) {
+          return parsed.volume;
+        }
+      }
+    } catch {
+      /* fall through */
+    }
+    return 1;
+  });
+  const [muted, setMuted] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem(VOLUME_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed?.muted === 'boolean') return parsed.muted;
+      }
+    } catch {
+      /* fall through */
+    }
+    return false;
+  });
+  // Theme: 'dark' | 'light' | 'system'. The toggle button (☀/🌙)
+  // was removed in a prior pass but we keep reading & persisting the
+  // value so a future UI can re-read it. CSS follows
+  // `prefers-color-scheme` when this is 'system' (the default).
   const [theme, setTheme] = useState<'dark' | 'light' | 'system'>(() => {
     const saved = localStorage.getItem('musicbox:theme') as
       | 'dark'
@@ -186,29 +303,73 @@ export default function App() {
       | null;
     return saved ?? 'system';
   });
-  // The active (resolved) theme — what the CSS variables actually
-  // reflect. We track it so the toggle button shows the right glyph.
-  const [resolvedTheme, setResolvedTheme] = useState<'dark' | 'light'>(
-    'dark',
-  );
 
-  // Apply the theme on mount and whenever the user toggles.
+  // Apply the theme on mount and whenever it changes — write the
+  // [data-theme] attribute on <html> so the CSS variables flip.
   useEffect(() => {
     localStorage.setItem('musicbox:theme', theme);
+    const root = document.documentElement;
     if (theme === 'system') {
-      const mq = window.matchMedia('(prefers-color-scheme: dark)');
-      setResolvedTheme(mq.matches ? 'dark' : 'light');
-      const handler = (e: MediaQueryListEvent) =>
-        setResolvedTheme(e.matches ? 'dark' : 'light');
-      mq.addEventListener('change', handler);
-      return () => mq.removeEventListener('change', handler);
+      root.removeAttribute('data-theme');
+    } else {
+      root.setAttribute('data-theme', theme);
     }
-    setResolvedTheme(theme);
   }, [theme]);
 
-  const cycleTheme = useCallback(() => {
-    setTheme((t) => (t === 'system' ? 'dark' : t === 'dark' ? 'light' : 'system'));
-  }, []);
+  // Persist volume + muted to localStorage. Single key, JSON-encoded
+  // so we can extend with new fields later (e.g. balance) without
+  // a migration. We don't write during the initial render — the
+  // lazy useState initialiser already reads from the same key, so
+  // persisting again immediately would be redundant.
+  useEffect(() => {
+    try {
+      localStorage.setItem(VOLUME_KEY, JSON.stringify({ volume, muted }));
+    } catch {
+      /* quota / private mode — silently skip */
+    }
+  }, [volume, muted]);
+
+  // Push the user's volume preference onto the live <audio> element
+  // whenever it changes. Runs on first mount too — if the user
+  // muted the player yesterday, the first audio element of this
+  // session starts muted without a flash of full-volume audio.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (audio) {
+      audio.volume = muted ? 0 : volume;
+    }
+  }, [volume, muted, track]);
+
+  // Fetch lyrics when the track changes. Kicks off after presentTrack
+  // sets the new track so we know the provider + id. Clears previous
+  // lyrics immediately so the panel shows the loading state during
+  // the fetch, not stale content from the old track.
+  useEffect(() => {
+    if (!track?.id || !provider) {
+      setLyrics(null);
+      setLyricsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setLyricsLoading(true);
+    setLyrics(null);
+    fetchLyrics(provider, track.id)
+      .then((result) => {
+        if (!cancelled) {
+          setLyrics(result);
+          setLyricsLoading(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLyrics(null);
+          setLyricsLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [track?.id, provider]);
 
   // Fetch the list of available Deezer editorials once on mount.
   useEffect(() => {
@@ -231,6 +392,80 @@ export default function App() {
     }
   }, [provider]);
 
+  /**
+   * Lazily attach a Web Audio analyser to the live <audio> element on
+   * the first user gesture (the play-button click).
+   *
+   * We use `createMediaElementSource(audioEl)` and route
+   * source → analyser → ctx.destination. This is the reliable way to
+   * feed the frequency analyser: it taps the decoded PCM of the element
+   * directly. `captureStream()` was tried before and DOESN'T work here —
+   * for cross-origin media it returns a track-less stream, so the
+   * analyser saw silence and the visualizer never started.
+   *
+   * Two requirements make this work now:
+   *   1. The <audio> has `crossOrigin="anonymous"` (set in JSX), and
+   *   2. our stream endpoint proxies the bytes same-origin with an
+   *      `Access-Control-Allow-Origin: *` header (see music.controller).
+   * Together they make the media CORS-clean, so the graph gets real
+   * samples instead of zeros.
+   *
+   * `createMediaElementSource` can only be called ONCE per element and
+   * permanently reroutes the element's output through the graph — so we
+   * MUST connect to ctx.destination or playback goes silent. We guard
+   * with mediaSrcRef so a second call (e.g. re-entrancy) is a no-op.
+   */
+  const ensureAudioGraph = useCallback((): AnalyserNode | null => {
+    if (audioCtxRef.current && analyser) {
+      // Already built — just make sure the context is running.
+      // (It gets suspended when the window loses focus on some OSes.)
+      if (audioCtxRef.current.state === 'suspended') {
+        void audioCtxRef.current.resume().catch((e) => {
+          console.warn('[audio] context resume() rejected:', e);
+        });
+      }
+      return analyser;
+    }
+    const audioEl = audioRef.current;
+    if (!audioEl) return null;
+    try {
+      // webkitAudioContext is the legacy-prefixed constructor used
+      // by older Electron / Safari builds.
+      const Ctor: typeof AudioContext =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext })
+          .webkitAudioContext;
+      const ctx = new Ctor();
+      // createMediaElementSource throws if called twice on the same
+      // element; mediaSrcRef caches the one instance across rebuilds.
+      const src =
+        mediaSrcRef.current ?? ctx.createMediaElementSource(audioEl);
+      mediaSrcRef.current = src;
+      const node = ctx.createAnalyser();
+      node.fftSize = 256;
+      node.smoothingTimeConstant = 0.72;
+      // source → analyser → speakers. The analyser is a pass-through
+      // node (it doesn't alter the signal), so connecting it inline is
+      // safe; we MUST reach destination or the element goes silent.
+      src.connect(node);
+      node.connect(ctx.destination);
+      audioCtxRef.current = ctx;
+      // State update (not a ref write) — this is what unblocks the
+      // Visualizer, which receives `analyser` as a prop and only
+      // re-runs its draw effect when this value changes.
+      setAnalyser(node);
+      if (ctx.state === 'suspended') {
+        void ctx.resume().catch((e) => {
+          console.warn('[audio] initial context resume() rejected:', e);
+        });
+      }
+      return node;
+    } catch (e) {
+      console.error('[audio] failed to build audio graph', e);
+      return null;
+    }
+  }, [analyser]);
+
   // 把一首 Track 呈现到播放器：解析绝对 audioUrl、换封面、置播放意图。
   // 服务端电台和搜索结果两条路径都复用它。
   const presentTrack = useCallback((next: Track) => {
@@ -247,10 +482,24 @@ export default function App() {
       audioUrl += `${sep}q=${qqQualityRef.current}`;
     }
     if (next.coverUrl) {
+      // Pass the ref objects themselves, not the .current DOM nodes.
+      // We added `key={track.id}` on cover-stack (for the shared-
+      // element animation), which means the cover-art div unmounts
+      // and remounts on every track change. If we passed the DOM
+      // nodes captured HERE, the async fetch inside applyCoverImage
+      // would resolve later, and `coverBackdrop.style.backgroundImage
+      // = …` would write onto an already-detached node — the visible
+      // cover-art would keep its old background forever. Reading
+      // ref.current INSIDE the async function reads the freshly
+      // mounted new div. (bg-layer doesn't have a key so its ref is
+      // always live, but passing the ref keeps the two symmetric.)
+      coverEpochRef.current += 1;
       void applyCoverImage(
         next.coverUrl,
-        bgLayerRef.current,
-        coverBackdropRef.current,
+        bgLayerRef,
+        coverBackdropRef,
+        coverEpochRef.current,
+        coverEpochRef,
       );
     }
     setTrack({ ...next, audioUrl });
@@ -258,6 +507,15 @@ export default function App() {
     const audio = audioRef.current;
     if (audio) audio.dataset.wantPlay = '1';
     setPlaying(true);
+    // NOTE: do NOT call ensureAudioGraph() here. Building the audio
+    // graph (new AudioContext + createMediaElementSource) requires
+    // a real user gesture — otherwise the context starts suspended
+    // and never produces sound. The graph is built lazily on the
+    // first handlePlayPause click (which IS a user gesture). Until
+    // then the audio plays through the default <audio> path, so
+    // opening the app and auto-playing the first track works fine.
+    // The trade-off: the visualizer shows its placeholder state
+    // until the user clicks play/pause once.
   }, []);
 
   const loadNextTrack = useCallback(async () => {
@@ -339,6 +597,14 @@ export default function App() {
     };
     const onPlay = () => {
       audio.dataset.wantPlay = '1';
+      // Build the Web Audio graph the moment playback actually starts,
+      // not just on an explicit play-button click. The first track
+      // autoplays, so requiring a click meant the visualizer never
+      // started until the user happened to hit pause/play. Autoplay
+      // is allowed in this Electron shell, so the AudioContext can run
+      // here without a fresh gesture. ensureAudioGraph is idempotent —
+      // subsequent calls just return the existing analyser.
+      ensureAudioGraph();
     };
     const onPause = () => {
       audio.dataset.wantPlay = '0';
@@ -371,7 +637,7 @@ export default function App() {
       audio.removeEventListener('ended', onEnded);
       audio.removeEventListener('error', onError);
     };
-  }, [track, loadNextTrack]);
+  }, [track, loadNextTrack, ensureAudioGraph]);
 
   // Sync play/pause — but only call play() once the audio is actually
   // ready. The <audio> element gets its src set when the <audio> JSX
@@ -396,6 +662,39 @@ export default function App() {
       audio.pause();
     }
   }, [playing, track]);
+
+  // Bass-driven breathing for the cover card. RAF loop reads the
+  // analyser's low-frequency bins and writes a 0..1 intensity to
+  // --bass-intensity on :root, which the .cover-card.is-playing
+  // animation in App.css uses to set its period. The loop runs at
+  // 60fps but only does work while the audio is actually playing
+  // (otherwise we just write 0 and skip the analyser read).
+  useEffect(() => {
+    let raf = 0;
+    const buf = new Uint8Array(64); // small buffer; we only need low bins
+    const tick = () => {
+      if (analyser && playing) {
+        analyser.getByteFrequencyData(buf);
+        // Average bins 1..12 (bin 0 is DC; bin 12 ≈ ~1kHz at 44.1kHz
+        // with fftSize=256, which covers kick + bass + low mids).
+        let sum = 0;
+        for (let i = 1; i <= 12; i++) sum += buf[i];
+        const bass = sum / (12 * 255);
+        // Slight ease so single transients don't make the pulse
+        // stutter. Multiply by 1.1 to push the upper range into
+        // visible territory even on bass-light tracks.
+        document.documentElement.style.setProperty(
+          '--bass-intensity',
+          (bass * 1.1).toFixed(3),
+        );
+      } else {
+        document.documentElement.style.setProperty('--bass-intensity', '0');
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [playing, analyser]);
 
   const handleSelectSource = (next: MusicProvider) => {
     localStorage.setItem(PROVIDER_STORAGE_KEY, next);
@@ -439,6 +738,12 @@ export default function App() {
     setAuth({ provider: 'qq', loggedIn: false, user: null });
     localStorage.removeItem(PROVIDER_STORAGE_KEY);
     setProvider(null);
+    // Drop the analyser so the Visualizer re-shows its placeholder
+    // (and, on next play, ensureAudioGraph rebuilds for the new
+    // <audio> element rather than reading from a stale MediaStream).
+    setAnalyser(null);
+    setLyrics(null);
+    setLyricsLoading(false);
   };
 
   /**
@@ -481,8 +786,29 @@ export default function App() {
     }
   };
 
-  const handlePlayPause = () => setPlaying((p) => !p);
+  const handlePlayPause = () => {
+    // Build the audio graph the first time the user hits play.
+    // Subsequent clicks just resume the existing context if needed.
+    ensureAudioGraph();
+    setPlaying((p) => !p);
+  };
   const handleSkip = () => loadNextTrack();
+
+  /** Slider drag: update volume. If the user drags up from 0 while
+   *  muted, automatically unmute — the gesture implies "I want
+   *  sound now", not "I want my mute preference preserved". */
+  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = Number(e.target.value) / 100;
+    setVolume(v);
+    if (v > 0 && muted) setMuted(false);
+  };
+
+  /** Mute button: toggle muted without touching volume. The slider
+   *  stays at its previous position so unmuting restores the user's
+   *  last-set level. */
+  const toggleMute = () => {
+    setMuted((m) => !m);
+  };
 
   const handleLike = async () => {
     if (!track || !provider) return;
@@ -601,6 +927,12 @@ export default function App() {
     setAuth({ provider: 'qq', loggedIn: false, user: null });
     setProvider(null);
     setTheme('system');
+    // Same reasoning as handleSwitchSource — drop the analyser so it
+    // doesn't keep reading from a MediaStream whose source <audio>
+    // element we just unmounted.
+    setAnalyser(null);
+    setLyrics(null);
+    setLyricsLoading(false);
   };
 
   const handleCookieFallbackSuccess = (user: AuthUser) => {
@@ -614,14 +946,56 @@ export default function App() {
     return <SourceSelect onSelect={handleSelectSource} />;
   }
 
-  const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
-
   return (
     <div className="app">
-      {/* Top bar: all the switching controls live up here. macOS
-          traffic-light safe area (78px) is handled by the titlebar's
-          padding-left. */}
+      {/* Top bar: source switch on the left, then provider-specific
+          controls (preset / search / quality), then auth + reset
+          pushed to the right via margin-left:auto. macOS traffic-light
+          safe area (96px) is handled by the titlebar's padding-left
+          AND the source-switch's left offset. */}
       <div className="titlebar">
+        {/* Source-switch — always present, lives in the titlebar flow.
+            The wrap is `position:fixed` so the dropdown menu can anchor
+            to the button even though the titlebar itself is a flex
+            row (so the button still respects flex spacing). */}
+        <div className="source-switch-wrap">
+          <button
+            className="titlebar-btn source-switch"
+            onClick={() => setSourceMenuOpen((v) => !v)}
+            title="切换音源"
+          >
+            {PROVIDER_LABELS[provider]}
+            <span className="source-switch-icon">⇄</span>
+          </button>
+
+          {sourceMenuOpen && (
+            <>
+              {/* 透明背板：点空白处关闭菜单，不影响播放 */}
+              <div
+                className="source-menu-backdrop"
+                onClick={() => setSourceMenuOpen(false)}
+              />
+              <div className="source-menu" role="menu">
+                {(['qq', 'netease', 'deezer'] as MusicProvider[]).map((p) => (
+                  <button
+                    key={p}
+                    className={`source-menu-item${
+                      p === provider ? ' source-menu-item--active' : ''
+                    }`}
+                    onClick={() => switchToProvider(p)}
+                    role="menuitem"
+                  >
+                    <span className="source-menu-check">
+                      {p === provider ? '✓' : ''}
+                    </span>
+                    <span className="source-menu-label">{PROVIDER_LABELS[p]}</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
         {provider === 'deezer' && deezerEditorials.length > 0 && (
           <select
             className="preset-select"
@@ -708,6 +1082,19 @@ export default function App() {
           </button>
         )}
 
+        {/* When logged in, surface the account nickname as a button
+            that triggers logout / source-switch. Pushed to the right
+            edge of the titlebar via margin-left:auto (set in CSS). */}
+        {auth.loggedIn && (
+          <button
+            className="titlebar-btn account-btn"
+            onClick={provider === 'deezer' ? handleSwitchSource : handleLogout}
+            title={provider === 'deezer' ? '切换音源' : '退出登录'}
+          >
+            {auth.user?.nickname || 'User'}
+          </button>
+        )}
+
         <button
           className="titlebar-btn reset-btn"
           onClick={handleResetLocal}
@@ -717,96 +1104,126 @@ export default function App() {
         </button>
       </div>
 
-      {/* Cover: classic round black disc, rotating gently while
-          playing. The cover-load hook puts the user's background
-          image here via background-image; the LP textures (rings,
-          centre label, hole) are absolutely-positioned siblings so
-          they rotate together. */}
-      {/* Source-switch — 点击弹出下拉菜单，不打断当前播放。 */}
-      <div className="source-switch-wrap">
-        <button
-          className="body-corner-btn source-switch"
-          onClick={() => setSourceMenuOpen((v) => !v)}
-          title="切换音源"
-        >
-          {PROVIDER_LABELS[provider]}
-          <span className="source-switch-icon">⇄</span>
-        </button>
+      {/* Full-window blurred cover layer. Sits behind everything
+          else in the window so the glass cards above it have a
+          rich, soft, colour-saturated backdrop to actually blur.
+          Without this, backdrop-filter:blur(40px) has nothing to
+          blur except the body's flat radial gradients — and the
+          "frosted glass" effect reads as plain translucent panels.
+          background-image is set by applyCoverImage() via the
+          bgLayerRef below, so it tracks the current track. */}
+      <div className="bg-layer" ref={bgLayerRef} aria-hidden="true" />
 
-        {sourceMenuOpen && (
-          <>
-            {/* 透明背板：点空白处关闭菜单，不影响播放 */}
-            <div
-              className="source-menu-backdrop"
-              onClick={() => setSourceMenuOpen(false)}
-            />
-            <div className="source-menu" role="menu">
-              {(['qq', 'netease', 'deezer'] as MusicProvider[]).map((p) => (
-                <button
-                  key={p}
-                  className={`source-menu-item${
-                    p === provider ? ' source-menu-item--active' : ''
-                  }`}
-                  onClick={() => switchToProvider(p)}
-                  role="menuitem"
-                >
-                  <span className="source-menu-check">
-                    {p === provider ? '✓' : ''}
-                  </span>
-                  <span className="source-menu-label">{PROVIDER_LABELS[p]}</span>
-                </button>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* The provider's "logged in as" label moves to the top-right
-          corner, mirroring the source-switch on the left. */}
-      {auth.loggedIn && (
-        <button
-          className="body-corner-btn body-corner-btn--right"
-          onClick={provider === 'deezer' ? handleSwitchSource : handleLogout}
-          title={provider === 'deezer' ? '切换音源' : '退出登录'}
-        >
-          {auth.user?.nickname || 'User'}
-        </button>
-      )}
-
-      <div className="cover-container">
+      {/* Bento grid: cover card (big, left) | side column (now-playing +
+          queue). The cover-load hook writes the user's background
+          image onto .cover-art via background-image. No vinyl — this
+          is the modern Bento aesthetic. */}
+      <div className="app-grid">
         <div
-          className={`cover-backdrop${playing ? '' : ' paused'}`}
-          ref={coverBackdropRef}
-          onError={() => {
-            document.documentElement.style.setProperty(
-              '--cover-accent',
-              '#1a1a1f',
-            );
-            document.documentElement.style.setProperty(
-              '--cover-glow',
-              'transparent',
-            );
-          }}
+          className={`glass-card cover-card${playing ? ' is-playing' : ''}`}
         >
-          <div className="vinyl-rings" />
-          <div className="vinyl-label" />
-          <div className="vinyl-hole" />
+          {/* key=track.id forces React to unmount + remount the
+              cover-stack on every track change, which retriggers
+              the CSS @keyframes on .cover-stack (see App.css).
+              Without the key, the same DOM node would just get a
+              new background-image and the spring-in wouldn't play.
+              The role- prefix is required because cover-stack and
+              cover-meta are siblings under cover-card and both want
+              to remount on track change — without the prefix they'd
+              share the same key and React would warn / behave
+              unpredictably. */}
+          <div className="cover-stack" key={`stack-${track?.id ?? 'empty'}`}>
+            <div
+              className="cover-art"
+              ref={coverBackdropRef}
+              onError={() => {
+                document.documentElement.style.setProperty(
+                  '--cover-accent',
+                  '#1a1a1f',
+                );
+                document.documentElement.style.setProperty(
+                  '--cover-glow',
+                  'transparent',
+                );
+              }}
+            >
+              {!track?.coverUrl && (
+                <div className="cover-art-placeholder">♪</div>
+              )}
+            </div>
+            {/* Mirror reflection: picks up the same background-image
+                via `background-image: inherit`, vertically flipped
+                and blurred to evoke a wet-floor reflection. The mask
+                fades it out so it blends with the dark background
+                instead of clipping hard against the cover edge. */}
+            <div className="cover-art-reflection" aria-hidden="true" />
+          </div>
+          <div className="cover-meta" key={`meta-${track?.id ?? 'empty'}`}>
+            <div className="track-title">{track?.title || '...'}</div>
+            <div className="track-artist">{track?.artist || '正在加载'}</div>
+            {track?.album && (
+              <div className="track-album">{track.album}</div>
+            )}
+            {error && (
+              <ErrorPanel message={error} onClose={() => setError(null)} />
+            )}
+          </div>
+        </div>
+
+        <div className="side-column">
+          <div className="glass-card side-card">
+            <div className="side-card-label">Now Playing</div>
+            <div className="now-playing-grid">
+              <div className="now-playing-cell">
+                <div className="now-playing-cell-label">Source</div>
+                <div className="now-playing-cell-value">
+                  {PROVIDER_LABELS[provider]}
+                </div>
+              </div>
+              <div className="now-playing-cell">
+                <div className="now-playing-cell-label">Quality</div>
+                <div className="now-playing-cell-value">
+                  {QQ_QUALITY_LABELS[qqQuality]}
+                </div>
+              </div>
+              <div className="now-playing-cell">
+                <div className="now-playing-cell-label">Status</div>
+                <div className="now-playing-cell-value">
+                  {loading ? 'Loading…' : playing ? 'Playing' : 'Paused'}
+                </div>
+              </div>
+              <div className="now-playing-cell">
+                <div className="now-playing-cell-label">Account</div>
+                <div className="now-playing-cell-value">
+                  {auth.user?.nickname ?? 'Guest'}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="glass-card side-card lyrics-card">
+            <div className="side-card-label">Lyrics</div>
+            <LyricsPanel
+              lyrics={lyrics}
+              currentTime={currentTime}
+              loading={lyricsLoading}
+              onSeek={(time) => {
+                if (audioRef.current) {
+                  audioRef.current.currentTime = time;
+                }
+              }}
+            />
+          </div>
         </div>
       </div>
 
-      {/* Track info centred under the cover. */}
-      <div className="track-info">
-        <div className="track-title">{track?.title || '...'}</div>
-        <div className="track-artist">
-          {track ? `${track.artist} · ${track.album}` : '正在加载'}
-        </div>
-        {error && (
-          <ErrorPanel message={error} onClose={() => setError(null)} />
-        )}
-      </div>
-
-      {/* Progress line + timecodes above the transport. */}
-      <div className="progress-container">
+      {/* Progress bar — full-width standalone row between the cards
+          and the transport. Thin line + growing thumb dot on hover.
+          The bottom of this row holds the time codes on the left and
+          the volume group on the right (justify-between), so the
+          time and the volume sit on opposite ends of the same line
+          without crowding. */}
+      <div className="progress-row">
         <div
           className="progress-bar"
           onClick={(e) => {
@@ -822,15 +1239,39 @@ export default function App() {
             style={{ width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
           />
         </div>
-        <div className="progress-time">
-          <span>{formatTime(currentTime)}</span>
-          <span>{formatTime(duration)}</span>
+        <div className="progress-meta">
+          <div className="progress-time">
+            <span>{formatTime(currentTime)}</span>
+            <span>{formatTime(duration)}</span>
+          </div>
+          <div className="volume-group">
+            <button
+              className={`volume-btn${muted ? ' is-muted' : ''}`}
+              onClick={toggleMute}
+              title={muted ? '取消静音' : '静音'}
+              aria-label={muted ? '取消静音' : '静音'}
+            >
+              <VolumeIcon volume={volume} muted={muted} />
+            </button>
+            <input
+              type="range"
+              className="volume-slider"
+              min={0}
+              max={100}
+              step={1}
+              value={Math.round(volume * 100)}
+              onChange={handleVolumeChange}
+              aria-label="音量"
+              style={{
+                background: `linear-gradient(to right, var(--accent-live) ${volume * 100}%, color-mix(in oklab, var(--text-primary) 18%, transparent) ${volume * 100}%)`,
+              }}
+            />
+          </div>
         </div>
       </div>
 
-      {/* Bottom transport: dislike / play / skip — no like here, that
-          lives in the titlebar (or we can move it down later). */}
-      <div className="controls">
+      {/* Bottom transport: dislike / like / play / skip. */}
+      <div className="transport-row">
         <button
           className="control-btn dislike-btn"
           onClick={handleDislike}
@@ -886,9 +1327,20 @@ export default function App() {
         </button>
       </div>
 
-      {track && track.audioUrl && (
-        <audio ref={audioRef} src={track.audioUrl} preload="auto" />
-      )}
+      {/* Always mounted (never conditionally unmounted) so the Web
+          Audio graph built on it in ensureAudioGraph stays valid for
+          the whole session — createMediaElementSource can only be
+          called once per element, and a remounted element would
+          orphan the cached source node. src is left unset when there's
+          no track. crossOrigin="anonymous" + the server's CORS header
+          on /music/stream make the media CORS-clean so the analyser
+          gets real samples (the visualizer's whole prerequisite). */}
+      <audio
+        ref={audioRef}
+        src={track?.audioUrl || undefined}
+        crossOrigin="anonymous"
+        preload="auto"
+      />
 
       {showCookieFallback && (
         <NeteaseCookieModal
