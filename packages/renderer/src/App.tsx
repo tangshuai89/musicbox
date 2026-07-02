@@ -126,15 +126,7 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const fromCallback = params.get('provider');
     if (fromCallback === 'qq' || fromCallback === 'netease') return fromCallback;
-    const stored = readStoredProvider();
-    // NetEase is temporarily disabled (weapi 200 + empty body since
-    // 2024 anti-bot upgrade). If the user has it stored, force them back
-    // to the source picker so they see the QQ option.
-    if (stored === 'netease') {
-      localStorage.removeItem(PROVIDER_STORAGE_KEY);
-      return null;
-    }
-    return stored;
+    return readStoredProvider();
   });
   const [track, setTrack] = useState<Track | null>(null);
   const [auth, setAuth] = useState<AuthStatus>({

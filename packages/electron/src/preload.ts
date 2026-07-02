@@ -6,21 +6,6 @@ import { contextBridge, ipcRenderer } from 'electron';
  * else (API calls, audio state) stays in the renderer.
  */
 
-export interface NeteaseLoginResult {
-  musicU: string;
-  csrfToken?: string;
-  /** All NetEase cookies captured from the login window. */
-  extraCookies?: Record<string, string>;
-}
-
-export interface NeteaseLoginResponse {
-  success: boolean;
-  musicU?: string;
-  csrfToken?: string;
-  extraCookies?: Record<string, string>;
-  error?: string;
-}
-
 export interface QqLoginResult {
   /** Full "k=v; k=v" QQ Music login cookie header. */
   cookie: string;
@@ -39,20 +24,6 @@ export interface QqLoginResponse {
 
 const electronAPI = {
   platform: process.platform,
-
-  /** Open a NetEase login window; resolves when MUSIC_U cookie is captured. */
-  neteaseLogin: (): Promise<NeteaseLoginResponse> =>
-    ipcRenderer.invoke('netease:login'),
-
-  /** Subscribe to login-completed events (alternative to awaiting invoke). */
-  onNeteaseLoginSuccess: (cb: (r: NeteaseLoginResult) => void): (() => void) => {
-    const handler = (
-      _e: unknown,
-      payload: NeteaseLoginResult,
-    ): void => cb(payload);
-    ipcRenderer.on('netease-login-result', handler);
-    return () => ipcRenderer.removeListener('netease-login-result', handler);
-  },
 
   /** Open a QQ Music login window; resolves when the login cookie is captured. */
   qqLogin: (): Promise<QqLoginResponse> => ipcRenderer.invoke('qq:login'),
