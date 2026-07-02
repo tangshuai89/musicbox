@@ -1,6 +1,7 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { Track } from './music.service';
 import { ProviderSession } from '../common/session';
+import { QqQuality } from './qq.provider';
 
 /**
  * 网易云音乐：私人 FM + 播放 URL + 红心。
@@ -50,6 +51,35 @@ interface SongUrlResponse {
   data?: SongUrlItem[];
 }
 
+interface NeteaseSearchSong {
+  id: number;
+  name: string;
+  artists?: { id: number; name: string }[];
+  album?: { id: number; name: string; picUrl?: string };
+  duration?: number;
+}
+
+interface NeteaseSearchResponse {
+  code: number;
+  result?: { songs?: NeteaseSearchSong[] };
+}
+
+interface SongDetailV3Response {
+  code: number;
+  songs?: {
+    id: number;
+    al?: { id: number; name: string; picUrl?: string };
+  }[];
+}
+
+/** QQ 音质档位 → 网易云 level。standard→standard，high→exhigh(≈320)，
+ * lossless→lossless（无损/hires 需会员，无权限时会回退）。 */
+const NETEASE_LEVEL: Record<QqQuality, string> = {
+  standard: 'standard',
+  high: 'exhigh',
+  lossless: 'lossless',
+};
+
 @Injectable()
 export class NeteaseMusicProvider {
   private readonly logger = new Logger(NeteaseMusicProvider.name);
@@ -89,27 +119,114 @@ export class NeteaseMusicProvider {
     }));
   }
 
-  /** 取歌曲的真实播放 URL（有时效，即拉即用）。 */
+  /**
+   * 按关键词搜索（歌手 / 歌名）。走明文 /api/search/get/web，服务端直连可用。
+   * 返回的 audioUrl 交由 music.service 拼成后端代理相对路径。
+   */
+  async search(
+    session: ProviderSession,
+    keyword: string,
+    count = 30,
+  ): Promise<Track[]> {
+    const data = await this.apiCall<NeteaseSearchResponse>(
+      session,
+      'https://music.163.com/api/search/get/web',
+      {
+        s: keyword,
+        type: '1', // 1 = 单曲
+        offset: '0',
+        limit: String(count),
+        total: 'true',
+      },
+    );
+    const songs = data.result?.songs ?? [];
+    this.logger.log(`netease search "${keyword}" → ${songs.length} 首`);
+    const tracks: Track[] = songs.map((s) => ({
+      id: String(s.id),
+      provider: 'netease' as const,
+      title: s.name,
+      artist: (s.artists ?? []).map((a) => a.name).join(' / ') || '未知艺人',
+      album: s.album?.name ?? '',
+      coverUrl: s.album?.picUrl ?? '',
+      audioUrl: '', // 由 getStreamPath 在播放时动态获取
+      duration: Math.round((s.duration ?? 0) / 1000),
+      liked: false,
+    }));
+    // /api/search/get/web 不返回专辑封面，批量补一发 song/detail 拿 al.picUrl。
+    const covers = await this.fetchCovers(
+      session,
+      tracks.map((t) => t.id),
+    );
+    return tracks.map((t) => ({
+      ...t,
+      coverUrl: covers.get(t.id) ?? t.coverUrl,
+    }));
+  }
+
+  /** 批量取封面（search/get/web 不含 al.picUrl）。失败不影响搜索结果。 */
+  private async fetchCovers(
+    session: ProviderSession,
+    ids: string[],
+  ): Promise<Map<string, string>> {
+    const map = new Map<string, string>();
+    if (!ids.length) return map;
+    try {
+      const c = JSON.stringify(ids.map((id) => ({ id: Number(id) })));
+      const data = await this.apiCall<SongDetailV3Response>(
+        session,
+        'https://music.163.com/api/v3/song/detail',
+        { c },
+      );
+      for (const s of data.songs ?? []) {
+        if (s.al?.picUrl) {
+          // ?param=300y300 → CDN 缩放到合适尺寸，省带宽。
+          map.set(String(s.id), `${s.al.picUrl}?param=300y300`);
+        }
+      }
+    } catch (err) {
+      this.logger.warn(`netease cover fetch failed: ${(err as Error).message}`);
+    }
+    return map;
+  }
+
+  /** 取歌曲的真实播放 URL（有时效，即拉即用）。按音质档位选 level。 */
   async getStreamPath(
     session: ProviderSession,
     songId: string,
+    quality: QqQuality = 'standard',
   ): Promise<string> {
+    const level = NETEASE_LEVEL[quality] ?? 'standard';
+    let item = await this.fetchSongUrl(session, songId, level);
+    // 该音质无权限/不存在（url 空）→ 回退标准音质再试一次。
+    if (!item?.url && level !== 'standard') {
+      this.logger.warn(
+        `netease ${level} 无 url，回退标准音质：${songId}`,
+      );
+      item = await this.fetchSongUrl(session, songId, 'standard');
+    }
+    if (!item?.url) {
+      throw new BadRequestException(
+        `netease stream url missing for ${songId}: code=${item?.code ?? 'n/a'}`,
+      );
+    }
+    return item.url;
+  }
+
+  private async fetchSongUrl(
+    session: ProviderSession,
+    songId: string,
+    level: string,
+  ): Promise<SongUrlItem | undefined> {
     const data = await this.apiCall<SongUrlResponse>(
       session,
       'https://music.163.com/api/song/enhance/player/url/v1',
       {
         ids: `[${Number(songId)}]`,
-        level: 'exhigh',
+        level,
         encodeType: 'aac',
       },
     );
-    const item = data.data?.[0];
-    if (!item?.url) {
-      throw new BadRequestException(
-        `netease stream url missing for ${songId}: code=${item?.code ?? data.code}`,
-      );
-    }
-    return item.url;
+    return data.data?.[0];
   }
 
   /** 给一首歌点红心。 */

@@ -211,7 +211,7 @@ export class MusicService {
       );
     }
     if (provider === 'netease') {
-      return this.netease.getStreamPath(ps!, trackId);
+      return this.netease.getStreamPath(ps!, trackId, opts?.quality ?? 'standard');
     }
     return this.deezer.getStreamPath(ps!, trackId);
   }
@@ -228,13 +228,21 @@ export class MusicService {
   ): Promise<Track[]> {
     const kw = keyword.trim();
     if (!kw) return [];
-    if (provider !== 'qq') {
+
+    let tracks: Track[];
+    if (provider === 'qq') {
+      const ps = session.providers.qq; // 可能未登录（QQ 搜索允许匿名）
+      tracks = await this.qq.search(ps ?? {}, kw);
+    } else if (provider === 'netease') {
+      // 网易云搜索需要登录态（cookie）。未登录时 requireProviderSession 抛 404。
+      const ps = this.requireProviderSession(session, 'netease');
+      tracks = await this.netease.search(ps!, kw);
+    } else {
       throw new BadRequestException(`搜索暂不支持 ${provider}`);
     }
-    const ps = session.providers.qq; // 可能未登录
-    const tracks = await this.qq.search(ps ?? {}, kw);
+
     const state = this.loadState(session);
-    const { liked, disliked } = state.qq;
+    const { liked, disliked } = state[provider];
     return tracks
       .filter((t) => !disliked.has(t.id))
       .map((t) => ({

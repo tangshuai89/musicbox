@@ -238,8 +238,11 @@ export default function App() {
       next.audioUrl && next.audioUrl.startsWith('/')
         ? (import.meta.env.DEV ? '' : 'http://localhost:3200') + next.audioUrl
         : next.audioUrl;
-    // QQ：把当前选择的音质拼进流地址（?mm=... 已在，追加 &q=）。
-    if (next.provider === 'qq' && audioUrl.includes('/music/stream/qq/')) {
+    // QQ / 网易云：把当前选择的音质拼进流地址（?mm=... 已在则追加 &q=）。
+    if (
+      (next.provider === 'qq' || next.provider === 'netease') &&
+      audioUrl.includes(`/music/stream/${next.provider}/`)
+    ) {
       const sep = audioUrl.includes('?') ? '&' : '?';
       audioUrl += `${sep}q=${qqQualityRef.current}`;
     }
@@ -454,14 +457,19 @@ export default function App() {
     setProvider(next);
   };
 
-  /** 切换 QQ 音质：立即用新音质重载当前歌，保留播放进度。 */
+  /** 切换音质（QQ / 网易云）：立即用新音质重载当前歌，保留播放进度。 */
   const changeQuality = (q: QqQuality) => {
     setQualityMenuOpen(false);
     setQqQuality(q);
     qqQualityRef.current = q;
     localStorage.setItem(QQ_QUALITY_KEY, q);
     const audio = audioRef.current;
-    if (audio && track && track.provider === 'qq' && track.audioUrl) {
+    if (
+      audio &&
+      track &&
+      (track.provider === 'qq' || track.provider === 'netease') &&
+      track.audioUrl
+    ) {
       pendingSeekRef.current = audio.currentTime; // 换源后跳回此进度
       const base = track.audioUrl
         .replace(/[?&]q=[^&]*/, '')
@@ -641,7 +649,7 @@ export default function App() {
           </select>
         )}
 
-        {provider === 'qq' && auth.loggedIn && (
+        {(provider === 'qq' || provider === 'netease') && auth.loggedIn && (
           <button
             className="titlebar-btn search-btn"
             onClick={() => setSearchOpen(true)}
@@ -651,7 +659,7 @@ export default function App() {
           </button>
         )}
 
-        {provider === 'qq' && auth.loggedIn && (
+        {(provider === 'qq' || provider === 'netease') && auth.loggedIn && (
           <div className="quality-wrap">
             <button
               className="titlebar-btn"
@@ -889,9 +897,9 @@ export default function App() {
         />
       )}
 
-      {searchOpen && provider === 'qq' && (
+      {searchOpen && (provider === 'qq' || provider === 'netease') && (
         <SearchPanel
-          provider="qq"
+          provider={provider}
           onPlay={handlePlaySearch}
           onClose={() => setSearchOpen(false)}
         />
