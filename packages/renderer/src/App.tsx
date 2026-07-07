@@ -14,8 +14,10 @@ import {
   fetchRecoStatus,
   runReco,
   saveRecoKey,
+  importLibrary,
   PROVIDER_LABELS,
   QQ_QUALITY_LABELS,
+  API_ORIGIN,
 } from './api';
 import type {
   Track,
@@ -72,10 +74,11 @@ async function applyCoverImage(
   epoch: number,
   epochRef: RefObject<number>,
 ): Promise<void> {
-  // Build the proxied URL once. In dev (Vite on :5173) the renderer
-  // hits /api/music/cover-proxy, which Vite's proxy rewrites to
-  // /music/cover-proxy on the NestJS server (:3200). See vite.config.ts.
-  const proxied = `/api/music/cover-proxy?url=${encodeURIComponent(url)}`;
+  // Build the proxied URL once, against the same origin the API client
+  // uses. In dev API_ORIGIN is '' → /music/cover-proxy (Vite proxies it
+  // to :3200); in prod it's the sidecar origin → an absolute URL, so it
+  // works even though the renderer is loaded from file://.
+  const proxied = `${API_ORIGIN}/music/cover-proxy?url=${encodeURIComponent(url)}`;
 
   let bitmap: ImageBitmap;
   try {
@@ -140,7 +143,12 @@ async function applyCoverImage(
 
 function readStoredProvider(): MusicProvider | null {
   const stored = localStorage.getItem(PROVIDER_STORAGE_KEY);
-  if (stored === 'qq' || stored === 'netease' || stored === 'deezer') {
+  if (
+    stored === 'qq' ||
+    stored === 'netease' ||
+    stored === 'deezer' ||
+    stored === 'spotify'
+  ) {
     return stored;
   }
   return null;
@@ -504,7 +512,7 @@ export default function App() {
   const presentTrack = useCallback((next: Track) => {
     let audioUrl =
       next.audioUrl && next.audioUrl.startsWith('/')
-        ? (import.meta.env.DEV ? '' : 'http://localhost:3200') + next.audioUrl
+        ? API_ORIGIN + next.audioUrl
         : next.audioUrl;
     // QQ / 网易云：把当前选择的音质拼进流地址（?mm=... 已在则追加 &q=）。
     if (
@@ -732,6 +740,15 @@ export default function App() {
   // 60fps but only does work while the audio is actually playing
   // (otherwise we just write 0 and skip the analyser read).
   useEffect(() => {
+    // 搜索浮层打开时冻结封面脉动。浮层有 backdrop-filter: blur()，会把
+    // 背后正在播放的封面持续重新采样；而封面每帧都在 scale/box-shadow
+    // 变化（--bass-intensity 驱动），于是（尤其滚动触发浮层重绘时）每次
+    // 采样到的都是不同的一帧 → 看起来像封面在不停闪烁/"重载"。搜索期间
+    // 让封面保持静止，backdrop-filter 采样到的始终是同一帧 → 不再闪。
+    if (searchOpen) {
+      document.documentElement.style.setProperty('--bass-intensity', '0');
+      return;
+    }
     let raf = 0;
     const buf = new Uint8Array(64); // small buffer; we only need low bins
     const tick = () => {
@@ -756,7 +773,7 @@ export default function App() {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing, analyser]);
+  }, [playing, analyser, searchOpen]);
 
   const handleSelectSource = (next: MusicProvider) => {
     localStorage.setItem(PROVIDER_STORAGE_KEY, next);
@@ -1016,12 +1033,29 @@ export default function App() {
       setRecoKeyOpen(true);
       return;
     }
-    if (status.librarySize === 0) {
-      setError('先 POST /music/library/import 导入你的"我的喜欢"再来推荐');
-      return;
-    }
     setRecoRunning(true);
     try {
+      // 库为空 → 先自动导入各平台"我的喜欢"（当前主要是网易云 / Spotify，
+      // 需已登录）。之前这里只丢一句"先 POST /music/library/import"，普通
+      // 用户点不了任何按钮，推荐等于死路——改成一键自动导入。
+      if (status.librarySize === 0) {
+        const lib = await importLibrary();
+        const imported = lib.sources.reduce((n, s) => n + s.count, 0);
+        if (imported === 0) {
+          const hints = lib.sources
+            .filter((s) => s.error)
+            .map((s) => `${PROVIDER_LABELS[s.provider]}: ${s.error}`)
+            .join('；');
+          setError(
+            `没有可导入的"我的喜欢"，先登录网易云或 Spotify 再试${
+              hints ? `（${hints}）` : ''
+            }`,
+          );
+          return;
+        }
+        status = { ...status, librarySize: lib.items.length };
+        setRecoStatus(status);
+      }
       const result = await runReco({ count: 10 });
       if (result.items.length === 0) {
         setError('推荐没拿到结果，换个心情/语言试试？');
@@ -1091,7 +1125,10 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    // search-open 时给根节点加个类：CSS 据此暂停封面上仍在跑的 CSS 动画
+    // （sheen 扫光），让封面在搜索浮层的 backdrop-filter 背后完全静止，
+    // 配合上面冻结的低频脉动，彻底消除"透过模糊层重采样导致的闪烁"。
+    <div className={`app${searchOpen ? ' search-open' : ''}`}>
       {/* Top bar: source switch on the left, then provider-specific
           controls (preset / search / quality), then auth + reset
           pushed to the right via margin-left:auto. macOS traffic-light

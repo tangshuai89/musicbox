@@ -79,7 +79,7 @@ export class SessionService implements OnModuleDestroy {
 
   /** Read or create a session based on the request cookie. */
   resolve(req: Request, res: Response): Session {
-    let id = (req as Request & { cookies?: Record<string, string> }).cookies?.[
+    let id = (req as Request & { signedCookies?: Record<string, string> }).signedCookies?.[
       COOKIE_NAME
     ];
     let session = id ? this.blob.byId[id] : undefined;
@@ -93,6 +93,10 @@ export class SessionService implements OnModuleDestroy {
         maxAge: this.cfg.sessionTtlMs,
         // secure: true in production (requires HTTPS)
         secure: false,
+        // Signed with cfg.sessionSecret → lands in req.signedCookies and
+        // can't be tampered client-side. Must match the read side, which
+        // reads signedCookies (see above).
+        signed: true,
       });
       this.persist();
     }
@@ -101,7 +105,7 @@ export class SessionService implements OnModuleDestroy {
 
   /** Require an existing session, otherwise 401. */
   require(req: Request, res: Response): Session {
-    const id = (req as Request & { cookies?: Record<string, string> }).cookies?.[
+    const id = (req as Request & { signedCookies?: Record<string, string> }).signedCookies?.[
       COOKIE_NAME
     ];
     const session = id ? this.blob.byId[id] : undefined;
@@ -114,6 +118,11 @@ export class SessionService implements OnModuleDestroy {
       sameSite: 'lax',
       maxAge: this.cfg.sessionTtlMs,
       secure: false,
+      // Sign the cookie with cfg.sessionSecret so it lands in
+      // req.signedCookies and can't be forged/tampered client-side.
+      // (Previously the secret was passed to cookieParser but never used
+      // because cookies were unsigned — dead config.)
+      signed: true,
     });
     return session;
   }
@@ -140,7 +149,7 @@ export class SessionService implements OnModuleDestroy {
   }
 
   destroy(req: Request, res: Response): void {
-    const id = (req as Request & { cookies?: Record<string, string> }).cookies?.[
+    const id = (req as Request & { signedCookies?: Record<string, string> }).signedCookies?.[
       COOKIE_NAME
     ];
     if (id) delete this.blob.byId[id];

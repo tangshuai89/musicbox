@@ -9,7 +9,10 @@ export {}; // 顶层 const 不与其他 .test.ts 冲突
 const assert = require('node:assert');
 const { SpotifyMusicProvider } = require('./spotify.provider');
 
-const svc = new SpotifyMusicProvider();
+// stub StorageService：resolveClientId 回退读它，这里恒返回 undefined，
+// 所以"无 client_id → refresh 返 null"（测试 5）仍然成立。
+const fakeStorage = { get: () => undefined, set: () => {} };
+const svc = new SpotifyMusicProvider(fakeStorage);
 
 // ── 1. PKCE start：authorizeUrl 包含所有 OAuth 参数 ────
 {

@@ -4,7 +4,6 @@ import {
   BadRequestException,
   HttpException,
   HttpStatus,
-  NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '../common/config';
 import { StorageService } from '../common/storage';
@@ -41,15 +40,6 @@ export interface RecoResult {
 interface DeepSeekChatResponse {
   choices?: Array<{ message?: { content?: string } }>;
   error?: { message?: string; type?: string };
-}
-
-/** 429 / 5xx 用。NestJS 自带 ServiceUnavailableException 不够用，自己抛。 */
-class RateLimitError extends Error {
-  retryAfterSec?: number;
-  constructor(message: string, retryAfterSec?: number) {
-    super(message);
-    this.retryAfterSec = retryAfterSec;
-  }
 }
 
 @Injectable()
@@ -210,8 +200,18 @@ export class RecoService {
     }
 
     if (res.status === 429) {
+      // 之前抛的是普通 Error（非 HttpException），NestJS 默认过滤器会把它
+      // 变成 500——客户端拿不到真正的 429，也丢了 Retry-After。改抛 429。
       const ra = Number(res.headers.get('retry-after'));
-      throw new RateLimitError('deepseek_rate_limit', Number.isFinite(ra) ? ra : undefined);
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.TOO_MANY_REQUESTS,
+          error: 'deepseek_rate_limit',
+          message: 'DeepSeek 频率限制，请稍后重试',
+          retryAfterSec: Number.isFinite(ra) ? ra : undefined,
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
     if (res.status >= 500) {
       this.logger.error(`deepseek 5xx: ${res.status}`);

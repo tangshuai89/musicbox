@@ -273,6 +273,12 @@ export class MusicService {
       }
       if (psState.queue.length === 0) break;
     }
+    // refill 成功但产出 0 首（例如整批都被 disliked 过滤掉，或平台返回空）
+    // → queue 仍空。此时 shift() 会返回 undefined，被 `!` 断言成 Track 传给
+    // 前端造成"空曲目"。显式返回占位，别让 undefined 漏出去。
+    if (psState.queue.length === 0) {
+      return this.placeholder(provider, '暂无更多曲目');
+    }
     const track = psState.queue.shift()!;
     this.saveState(session, state);
     return track;
@@ -421,46 +427,71 @@ export class MusicService {
         ),
     ).then(
       (res) => res ?? { platform: provider, tracks: [], total: 0, error: 'timeout' },
+      // 兜底：doSearchOneProvider 契约上不 throw，但如果它意外 reject
+      // （withTimeout 只 race、不 catch），这里必须把 reject 转成 error 结果。
+      // 绝不能让单平台的 reject 冒泡到 searchUnified 的 Promise.all——否则
+      // 一个平台没登录就会把整个统一搜索打成 404/500（回归 bug）。
+      (err: unknown) => ({
+        platform: provider,
+        tracks: [],
+        total: 0,
+        error: (err as Error)?.message ?? 'error',
+      }),
     );
   }
 
-  /** 真正发请求的逻辑。剥离出来便于在 searchOneProvider 外面套 withTimeout。 */
+  /** 真正发请求的逻辑。剥离出来便于在 searchOneProvider 外面套 withTimeout。
+   *  **契约：本方法绝不 throw**——某平台未登录 / 报错时返回带 error 的空结果，
+   *  保证统一搜索永远是"部分结果 > 全盘失败"。 */
   private async doSearchOneProvider(
     session: Session,
     provider: MusicProvider,
     keyword: string,
   ): Promise<ProviderSearchRaw> {
-    let tracks: Track[];
-    if (provider === 'qq') {
-      tracks = await this.qq.search(session.providers.qq ?? {}, keyword, 30);
-    } else if (provider === 'netease') {
-      const ps = this.requireProviderSession(session, 'netease');
-      tracks = await this.netease.search(ps!, keyword, 30);
-    } else if (provider === 'spotify') {
-      // Spotify 搜索需要登录态；未登录时 requireProviderSession 抛 404，
-      // 这里 catch 起来返回空 tracks + error，不阻塞其他平台。
-      const ps = this.requireProviderSession(session, 'spotify');
-      tracks = await this.spotify.search(ps!, keyword, 30);
-    } else {
-      tracks = await this.deezer.search(
-        session.providers.deezer ?? {},
-        keyword,
-        30,
+    try {
+      let tracks: Track[];
+      if (provider === 'qq') {
+        tracks = await this.qq.search(session.providers.qq ?? {}, keyword, 30);
+      } else if (provider === 'netease') {
+        // 网易云搜索需要登录态；未登录时 requireProviderSession 抛 404。
+        const ps = this.requireProviderSession(session, 'netease');
+        tracks = await this.netease.search(ps!, keyword, 30);
+      } else if (provider === 'spotify') {
+        // Spotify 搜索需要登录态；未登录时 requireProviderSession 抛 404。
+        const ps = this.requireProviderSession(session, 'spotify');
+        tracks = await this.spotify.search(ps!, keyword, 30);
+      } else {
+        tracks = await this.deezer.search(
+          session.providers.deezer ?? {},
+          keyword,
+          30,
+        );
+      }
+      // 统一搜索结果里 sources[].url 要带可播放的代理路径——provider.search()
+      // 返回的 track.audioUrl 可能是空（QQ/网易云 URL 短期过期，播放时由
+      // getStreamUrl 重新拿），所以这里替换成后端代理的相对路径，前端拼 base
+      // 后直接当 <audio src> 用。Deezer 的 audioUrl 已是 http 完整 URL（30s
+      // 预览），保留原值。
+      tracks = tracks.map((t) => ({
+        ...t,
+        audioUrl:
+          provider === 'deezer' && t.audioUrl && t.audioUrl.startsWith('http')
+            ? t.audioUrl
+            : this.streamPath(t),
+      }));
+      return { platform: provider, tracks, total: tracks.length };
+    } catch (err) {
+      // 未登录（NotFoundException）/ 平台报错 → 记一条 error 返回空结果。
+      this.logger.warn(
+        `unified search "${keyword}" on ${provider} failed: ${(err as Error).message}`,
       );
+      return {
+        platform: provider,
+        tracks: [],
+        total: 0,
+        error: (err as Error).message,
+      };
     }
-    // 统一搜索结果里 sources[].url 要带可播放的代理路径——provider.search()
-    // 返回的 track.audioUrl 可能是空（QQ/网易云 URL 短期过期，播放时由
-    // getStreamUrl 重新拿），所以这里替换成后端代理的相对路径，前端拼 base
-    // 后直接当 <audio src> 用。Deezer 的 audioUrl 已是 http 完整 URL（30s
-    // 预览），保留原值。
-    tracks = tracks.map((t) => ({
-      ...t,
-      audioUrl:
-        provider === 'deezer' && t.audioUrl && t.audioUrl.startsWith('http')
-          ? t.audioUrl
-          : this.streamPath(t),
-    }));
-    return { platform: provider, tracks, total: tracks.length };
   }
 
   /** 歌名+歌手标准化: 全角→半角、去空格、去标点、全小写。
@@ -575,9 +606,8 @@ export class MusicService {
     trackId: string,
     newLiked: boolean,
   ): Promise<void> {
-    // NetEase 是唯一真正有公开 ❤ API 的平台；QQ / Deezer 走 radio-like
-    // NetEase 和 Spotify 都有公开 ❤ API 同步；QQ / Deezer 走 radio-like
-    // / favorites API 都要登录态 + 签名，本地记录即可。
+    // NetEase 和 Spotify 都有公开 ❤ API，这里做远端同步；QQ / Deezer 的
+    // radio-like / favorites API 都要登录态 + 签名，只在本地记录即可。
     if (provider === 'netease') {
       const ps = session.providers[provider];
       if (!ps?.musicU) return;

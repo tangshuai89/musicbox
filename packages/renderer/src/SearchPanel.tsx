@@ -91,7 +91,17 @@ export default function SearchPanel({ onPlay, onClose }: Props) {
           controller.signal,
         );
         if (controller.signal.aborted) return;
-        setItems((prev) => (append ? [...prev, ...res.items] : res.items));
+        // 分页去重：searchUnified 每页都重新跑一遍跨平台搜索再切片，
+        // 各平台每次返回的集合/顺序、以及 5s 窗口内哪些平台应答都可能不同，
+        // 所以第 2 页的切片可能和第 1 页重叠 → 同一 merged item 出现两次 →
+        // key(it.id) 重复告警 + 列表里同一首歌重复显示。追加时按 id 过滤掉
+        // 已存在的项，保证列表里每个 merged item 唯一。
+        setItems((prev) => {
+          if (!append) return res.items;
+          const seen = new Set(prev.map((it) => it.id));
+          const fresh = res.items.filter((it) => !seen.has(it.id));
+          return [...prev, ...fresh];
+        });
         setPage(res.page);
         setHasMore(res.page * res.pageSize < res.total);
         if (!append) {
@@ -238,9 +248,13 @@ export default function SearchPanel({ onPlay, onClose }: Props) {
                     {it.duration > 0 ? ` · ${formatDuration(it.duration)}` : ''}
                   </div>
                   <div className="search-row-sources">
-                    {it.sources.map((s) => (
+                    {it.sources.map((s, si) => (
+                      // 一条 unified 结果可能有同平台的多个源（比如 Deezer 把
+                      // "Hello" 和 "Hello!" 归一到同一 key），只用 platform 当
+                      // key 会重复 → React "same key `deezer`" 警告刷屏。用
+                      // 平台前缀 + trackId（+ index 兜底）保证唯一。
                       <SourceChip
-                        key={s.platform}
+                        key={`${s.platform}-${s.trackId}-${si}`}
                         source={s}
                         isBest={s.platform === it.bestSource}
                       />

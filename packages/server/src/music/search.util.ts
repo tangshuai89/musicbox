@@ -77,8 +77,13 @@ export function buildUnifiedItems(
   }
 
   return [...grouped.values()].map(({ main, sources }) => {
+    // bestSource：按 PLAY_PRIORITY 选优先级最高、且有版权（hasCopyright）的
+    // 平台。当前搜索阶段 hasCopyright 恒为 true，但显式判断能在未来 provider
+    // 真正裁决版权时自动生效——与 types.ts 上的 doc 保持一致（之前漏判）。
     const bestSource =
-      PLAY_PRIORITY.find((p) => sources.some((s) => s.platform === p)) ?? null;
+      PLAY_PRIORITY.find((p) =>
+        sources.some((s) => s.platform === p && s.hasCopyright),
+      ) ?? null;
     return {
       id: `merged-${main.provider}-${main.id}`,
       title: main.title,
