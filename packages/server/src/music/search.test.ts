@@ -7,6 +7,7 @@
  *  - dedupTracks: 歌名+歌手合并
  *  - buildUnifiedItems: 跨平台聚合 + bestSource 选取
  */
+export {}; // 把文件当 module 处理，避免顶层 const 与其他 .test.ts 冲突
 const assert = require('node:assert');
 
 const {
@@ -29,20 +30,19 @@ function makeTrack(
   id: string,
   title: string,
   artist: string,
-  opts?: TrackOpts,
+  opts: TrackOpts = {},
 ): any {
-  const o = opts || {};
   return {
     id,
     provider,
     title,
     artist,
-    album: o.album ?? '',
-    coverUrl: o.coverUrl ?? '',
-    audioUrl: o.audioUrl ?? `/music/stream/${provider}/${id}`,
-    duration: o.duration ?? 0,
+    album: opts.album ?? '',
+    coverUrl: opts.coverUrl ?? '',
+    audioUrl: opts.audioUrl ?? `/music/stream/${provider}/${id}`,
+    duration: opts.duration ?? 0,
     liked: false,
-    mediaMid: o.mediaMid,
+    mediaMid: opts.mediaMid,
   };
 }
 

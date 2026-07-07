@@ -21,6 +21,7 @@ import {
   dedupTracks,
   normalizeKey,
 } from './search.util';
+import { MatchService } from '../match/match.service';
 
 export interface Track {
   id: string;
@@ -70,6 +71,7 @@ export class MusicService {
     private readonly qq: QqMusicProvider,
     private readonly netease: NeteaseMusicProvider,
     private readonly deezer: DeezerMusicProvider,
+    private readonly match: MatchService,
   ) {}
 
   private stateKey(sessionId: string): string {
@@ -592,6 +594,107 @@ export class MusicService {
   /** 当前 session 中某 mergedId 是否已被 fan-out 心动过。 */
   isFanOutLiked(state: MusicSessionState, mergedId: string): boolean {
     return (state.fanOut[mergedId]?.length ?? 0) > 0;
+  }
+
+  private libraryKey(sessionId: string): string {
+    return `library:${sessionId}`;
+  }
+
+  /**
+   * 拉取各平台"我的喜欢" → 合并为统一库 → 持久化到 .storage。
+   *
+   * 当前实现：仅 NetEase 真正能拉（"我喜欢的音乐" 走 /api/v6/playlist/detail）。
+   * QQ 收藏需要签名（vkey/g_tk），本轮不做；Deezer 走匿名模式无 user 概念。
+   * 后续接入 Spotify / QQ 后在这里加 case。
+   *
+   * 单平台失败不阻塞——返回的 `sources` 数组里如实记录每个平台的拉取状态
+   * （{provider, count, error?}），前端可以分别展示。
+   */
+  async importLiked(session: Session): Promise<{
+    items: UnifiedSearchItem[];
+    sources: Array<{
+      provider: MusicProvider;
+      count: number;
+      error?: string;
+    }>;
+    importedAt: number;
+  }> {
+    const sourceResults: Array<{
+      provider: MusicProvider;
+      count: number;
+      error?: string;
+    }> = [];
+    const allTracks: Track[] = [];
+
+    // NetEase
+    try {
+      const ps = session.providers.netease;
+      if (!ps?.musicU) {
+        sourceResults.push({
+          provider: 'netease',
+          count: 0,
+          error: 'not_logged_in',
+        });
+      } else {
+        const tracks = await this.netease.fetchLiked(ps, 1000);
+        sourceResults.push({ provider: 'netease', count: tracks.length });
+        allTracks.push(...tracks);
+      }
+    } catch (err) {
+      this.logger.warn(
+        `netease fetchLiked failed: ${(err as Error).message}`,
+      );
+      sourceResults.push({
+        provider: 'netease',
+        count: 0,
+        error: (err as Error).message,
+      });
+    }
+
+    // QQ: 公开 ❤ / 收藏 API 都需要签名，本轮留空
+    sourceResults.push({
+      provider: 'qq',
+      count: 0,
+      error: 'qq_favorites_requires_signature_not_yet_implemented',
+    });
+
+    // Deezer: 匿名模式无 user 概念
+    sourceResults.push({
+      provider: 'deezer',
+      count: 0,
+      error: 'deezer_anonymous_no_user_likes',
+    });
+
+    // 合并去重（走 MatchService.mergeLibrary → 内部复用 buildUnifiedItems）
+    const items = this.match.mergeLibrary(allTracks);
+
+    const importedAt = Date.now();
+    this.storage.set(this.libraryKey(session.id), {
+      importedAt,
+      items,
+      sources: sourceResults,
+    });
+
+    return { items, sources: sourceResults, importedAt };
+  }
+
+  /** 读取最近一次 import 的库（无则返回 null）。 */
+  getLibrary(session: Session): {
+    items: UnifiedSearchItem[];
+    sources: Array<{
+      provider: MusicProvider;
+      count: number;
+      error?: string;
+    }>;
+    importedAt: number;
+  } | null {
+    const stored = this.storage.get<{
+      importedAt: number;
+      items: UnifiedSearchItem[];
+      sources: Array<{ provider: MusicProvider; count: number; error?: string }>;
+    }>(this.libraryKey(session.id));
+    if (!stored) return null;
+    return stored;
   }
 
   /**

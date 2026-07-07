@@ -190,6 +190,35 @@ export class MusicController {
   }
 
   /**
+   * 触发"我的喜欢"导入：从各平台拉取用户已 ❤ 列表，合并去重后存到
+   * .storage/library.json。POST 而非 GET 是因为有副作用（写本地 state + 远端
+   * API 调用），结果在 body 里返回（调用方无需再 GET /library）。
+   */
+  @Post('library/import')
+  async importLibrary(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const session = this.sessionService.resolve(req, res);
+    return this.musicService.importLiked(session);
+  }
+
+  /** 读最近一次 import 的库（无则 404）。 */
+  @Get('library')
+  async getLibrary(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const session = this.sessionService.resolve(req, res);
+    const lib = this.musicService.getLibrary(session);
+    if (!lib) {
+      res.status(404);
+      return { error: 'library_not_imported' };
+    }
+    return lib;
+  }
+
+  /**
    * Audio stream proxy. The browser's <audio> tag loads this URL.
    *
    * We proxy the raw bytes for ALL providers (previously QQ/NetEase

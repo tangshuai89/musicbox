@@ -5,6 +5,7 @@
  * 因为 MatchService 强依赖三个 provider 实例，直接用 stub 对象注入构造，
  * 不启动 NestJS DI 容器。手写 fake providers 只暴露 search() 接口。
  */
+export {}; // 把文件当 module 处理，避免顶层 const 与其他 .test.ts 冲突
 const assert = require('node:assert');
 const { MatchService } = require('./match.service');
 const { normalizeKey } = require('../music/search.util');

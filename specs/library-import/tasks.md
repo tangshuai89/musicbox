@@ -1,0 +1,7 @@
+- [x] 1. NeteaseMusicProvider 加 fetchLiked(session, maxTracks) → Track[]
+- [x] 2. MusicService 加 importLiked(session) → 调各 provider fetchLiked → match.mergeLibrary → 存 .storage
+- [x] 3. MusicService 加 getLibrary(session) → 读 .storage
+- [x] 4. Controller 加 POST /music/library/import + GET /music/library
+- [x] 5. 持久化 key: library:{sessionId}
+- [x] 6. typecheck + 20/20 测试通过
+- [x] 7. e2e smoke test: nest + curl，未登录 NetEase 时 sources[].error = not_logged_in；路径映射 /music/library/import 正确

@@ -121,6 +121,96 @@ export class NeteaseMusicProvider {
   }
 
   /**
+   * 拉取用户的"我喜欢的音乐"歌单完整列表。
+   *
+   * 实现:
+   *  1. POST /api/nuser/account/get → 拿当前用户 uid
+   *  2. POST /api/user/playlist?uid=... → 拿用户所有歌单，定位 specialType=5
+   *     ("我喜欢的音乐" 在网易云里的特殊类型)，fallback 找名字等于'我喜欢的音乐'
+   *  3. POST /api/v6/playlist/detail?id=... → 拿歌单里的 tracks[]
+   *
+   * 返回最多 maxTracks 条（避免 10k+ 收藏的极端情况把响应撑爆）；track
+   * 里的元数据已经够用（id/name/artists/album/duration）所以不再单独
+   * 调 song/detail。
+   *
+   * 失败模式：
+   *  - code=301（未登录）→ 返回空数组，由上层决定是提示用户登录还是静默
+   *  - 找不到"我喜欢的音乐"歌单 → 返回空数组
+   *  - 任一 HTTP 错误 → 包成 BadRequestException 让上层 catch
+   */
+  async fetchLiked(
+    session: ProviderSession,
+    maxTracks = 1000,
+  ): Promise<Track[]> {
+    if (!this.isConfigured(session)) return [];
+
+    // 1. 当前用户 uid
+    const account = await this.apiCall<{ account?: { id?: number }; profile?: unknown }>(
+      session,
+      'https://music.163.com/api/nuser/account/get',
+      {},
+    );
+    const uid = account.account?.id;
+    if (!uid) {
+      this.logger.warn('netease fetchLiked: no uid from /nuser/account/get');
+      return [];
+    }
+
+    // 2. 用户歌单列表
+    const playlists = await this.apiCall<{
+      playlist?: Array<{
+        id: number;
+        name?: string;
+        specialType?: number;
+        creator?: { userId?: number };
+      }>;
+    }>(
+      session,
+      'https://music.163.com/api/user/playlist',
+      { uid: String(uid), limit: '50' },
+    );
+    const fav = (playlists.playlist ?? []).find(
+      (p) =>
+        // specialType=5 是"我喜欢的音乐"在网易云里的魔法值
+        p.specialType === 5 ||
+        (p.name === '我喜欢的音乐' && p.creator?.userId === uid),
+    );
+    if (!fav) {
+      this.logger.warn('netease fetchLiked: no "我喜欢的音乐" playlist found');
+      return [];
+    }
+
+    // 3. 歌单详情（含完整 tracks 列表）
+    const detail = await this.apiCall<{
+      playlist?: {
+        tracks?: Array<{
+          id: number;
+          name: string;
+          ar?: { id: number; name: string }[];
+          al?: { id: number; name: string; picUrl?: string };
+          dt?: number;
+        }>;
+      };
+    }>(
+      session,
+      'https://music.163.com/api/v6/playlist/detail',
+      { id: String(fav.id), n: '1000' },
+    );
+    const tracks = (detail.playlist?.tracks ?? []).slice(0, maxTracks);
+    return tracks.map((t) => ({
+      id: String(t.id),
+      provider: 'netease' as const,
+      title: t.name,
+      artist: t.ar?.map((a) => a.name).join(' / ') ?? '未知艺人',
+      album: t.al?.name ?? '',
+      coverUrl: t.al?.picUrl ?? '',
+      audioUrl: '',
+      duration: Math.round((t.dt ?? 0) / 1000),
+      liked: true, // 来源就是"我喜欢的音乐"，全部视为已 ❤
+    }));
+  }
+
+  /**
    * 按关键词搜索（歌手 / 歌名）。走明文 /api/search/get/web，服务端直连可用。
    * 返回的 audioUrl 交由 music.service 拼成后端代理相对路径。
    */
