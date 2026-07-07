@@ -42,6 +42,19 @@ interface ProviderState {
   disliked: Set<string>;
 }
 
+/** Heart fan-out 在每个 session 下的完整状态。
+ *  - providers: 老的 per-provider queue/liked/disliked（不变）
+ *  - fanOut: mergedId → "这个统一 track 已经在哪些平台心动了"（fan-out 实现基础）
+ *
+ *  fanOut 只在 liked=true 路径被写入；liked=false 反向清除时按这里记录的
+ *  平台列表 unlike——保证"只动我们之前心过的"，不会误清空用户原本单平台
+ *  心过的同一首歌。 */
+export interface MusicSessionState {
+  providers: Record<MusicProvider, ProviderState>;
+  /** mergedId → 在哪些平台心动了。空对象 = 没有任何 fan-out 记录。 */
+  fanOut: Record<string, MusicProvider[]>;
+}
+
 /** Some providers (Deezer) work without any auth — they don't need a
  * ProviderSession. We treat them as "always available". */
 const ANONYMOUS_PROVIDERS: ReadonlySet<MusicProvider> = new Set<MusicProvider>([
@@ -63,29 +76,35 @@ export class MusicService {
     return `music:${sessionId}`;
   }
 
-  private loadState(session: Session): Record<MusicProvider, ProviderState> {
+  private loadState(session: Session): MusicSessionState {
     const fresh = (): ProviderState => ({
       queue: [],
       liked: new Set<string>(),
       disliked: new Set<string>(),
     });
     // 始终以完整默认骨架起步，再叠加持久化数据，保证三个 provider 都存在。
-    const state: Record<MusicProvider, ProviderState> = {
+    const providers: Record<MusicProvider, ProviderState> = {
       qq: fresh(),
       netease: fresh(),
       deezer: fresh(),
     };
+    const fanOut: Record<string, MusicProvider[]> = {};
 
     const persisted = this.storage.get<Record<string, unknown>>(
       this.stateKey(session.id),
     );
     if (persisted) {
+      // 兼容老格式：持久化里直接是 {qq: {queue, liked, ...}, netease: ..., deezer: ...}
+      // 新格式：在 providers 之外多一层 fanOut 字段。
+      const persistedProviders =
+        (persisted as { providers?: Record<string, unknown> }).providers ??
+        (persisted as unknown as Record<string, unknown>);
       for (const key of ['qq', 'netease', 'deezer'] as MusicProvider[]) {
-        const s = persisted[key] as Partial<ProviderState> | undefined;
+        const s = persistedProviders[key] as Partial<ProviderState> | undefined;
         if (!s) continue;
         // 稳健还原：无论持久化里是数组、旧版 Set→{} 空对象、还是 undefined，
         // 一律 coerce 成 Set / 数组，避免 `.has is not a function`。
-        state[key] = {
+        providers[key] = {
           queue: Array.isArray(s.queue) ? (s.queue as Track[]) : [],
           liked: new Set(
             Array.isArray(s.liked) ? (s.liked as unknown as string[]) : [],
@@ -97,24 +116,43 @@ export class MusicService {
           ),
         };
       }
+      // fanOut 是新加的，老持久化文件没这个字段是正常的。
+      const rawFanOut = (persisted as { fanOut?: unknown }).fanOut;
+      if (rawFanOut && typeof rawFanOut === 'object') {
+        for (const [k, v] of Object.entries(rawFanOut)) {
+          if (Array.isArray(v)) {
+            fanOut[k] = v.filter(
+              (p): p is MusicProvider =>
+                p === 'qq' || p === 'netease' || p === 'deezer',
+            );
+          }
+        }
+      }
     }
-    return state;
+    return { providers, fanOut };
   }
 
-  private saveState(session: Session, state: Record<MusicProvider, ProviderState>): void {
+  private saveState(session: Session, state: MusicSessionState): void {
     const serializable = {
-      qq: { ...state.qq, liked: [...state.qq.liked], disliked: [...state.qq.disliked] },
-      netease: {
-        ...state.netease,
-        liked: [...state.netease.liked],
-        disliked: [...state.netease.disliked],
+      providers: {
+        qq: {
+          ...state.providers.qq,
+          liked: [...state.providers.qq.liked],
+          disliked: [...state.providers.qq.disliked],
+        },
+        netease: {
+          ...state.providers.netease,
+          liked: [...state.providers.netease.liked],
+          disliked: [...state.providers.netease.disliked],
+        },
+        deezer: {
+          ...state.providers.deezer,
+          liked: [...state.providers.deezer.liked],
+          disliked: [...state.providers.deezer.disliked],
+        },
       },
-      deezer: {
-        ...state.deezer,
-        liked: [...state.deezer.liked],
-        disliked: [...state.deezer.disliked],
-      },
-    } as unknown as Record<MusicProvider, ProviderState>;
+      fanOut: state.fanOut,
+    };
     this.storage.set(this.stateKey(session.id), serializable);
   }
 
@@ -133,7 +171,7 @@ export class MusicService {
   private async refillQueue(
     session: Session,
     provider: MusicProvider,
-    state: Record<MusicProvider, ProviderState>,
+    state: MusicSessionState,
   ): Promise<void> {
     const ps = this.requireProviderSession(session, provider);
     let batch: Track[];
@@ -154,7 +192,7 @@ export class MusicService {
       const preset = session.prefs?.deezerPreset ?? 'all';
       batch = await this.deezer.fetchRadioBatch(ps as ProviderSession, preset);
     }
-    const psState = state[provider];
+    const psState = state.providers[provider];
     batch = batch
       .filter((t) => !psState.disliked.has(t.id))
       .map((t) => {
@@ -182,7 +220,7 @@ export class MusicService {
   /** Get the next track from the radio. Auto-refills if the queue is empty. */
   async getNextTrack(session: Session, provider: MusicProvider): Promise<Track> {
     const state = this.loadState(session);
-    const psState = state[provider];
+    const psState = state.providers[provider];
     while (psState.queue.length === 0) {
       try {
         await this.refillQueue(session, provider, state);
@@ -253,7 +291,7 @@ export class MusicService {
     }
 
     const state = this.loadState(session);
-    const { liked, disliked } = state[provider];
+    const { liked, disliked } = state.providers[provider];
     return tracks
       .filter((t) => !disliked.has(t.id))
       .map((t) => ({
@@ -376,45 +414,14 @@ export class MusicService {
       : base;
   }
 
-  async toggleLike(
-    session: Session,
-    provider: MusicProvider,
-    trackId: string,
-  ): Promise<{ success: boolean; liked: boolean }> {
-    const state = this.loadState(session);
-    const psState = state[provider];
-    const wasLiked = psState.liked.has(trackId);
-    if (wasLiked) {
-      psState.liked.delete(trackId);
-    } else {
-      psState.liked.add(trackId);
-    }
-    this.saveState(session, state);
-
-    // 同步到远端（best-effort，失败不影响本地）
-    const ps = session.providers[provider];
-    if (provider === 'netease' && ps?.musicU) {
-      try {
-        if (!wasLiked) await this.netease.like(ps, trackId);
-        // 取消红心不需要远程通知
-      } catch (err) {
-        this.logger.warn(
-          `netease like sync failed: ${(err as Error).message}`,
-        );
-      }
-    }
-
-    return { success: true, liked: !wasLiked };
-  }
-
   async markDisliked(
     session: Session,
     provider: MusicProvider,
     trackId: string,
   ): Promise<{ success: boolean }> {
     const state = this.loadState(session);
-    state[provider].disliked.add(trackId);
-    state[provider].liked.delete(trackId);
+    state.providers[provider].disliked.add(trackId);
+    state.providers[provider].liked.delete(trackId);
     this.saveState(session, state);
 
     const ps = session.providers[provider];
@@ -435,7 +442,7 @@ export class MusicService {
     provider: MusicProvider,
   ): Promise<Track[]> {
     const state = this.loadState(session);
-    const psState = state[provider];
+    const psState = state.providers[provider];
     // 简化：返回 liked 集合里的占位记录，真实元数据需要按需拉
     return [...psState.liked].map((id) => ({
       id,
@@ -448,6 +455,143 @@ export class MusicService {
       duration: 0,
       liked: true,
     }));
+  }
+
+  /**
+   * 在给定 state 上「反转」某平台的 like 状态，返回反转前是否已 like。
+   * 纯内存操作（不 IO）。复用于单平台 toggleLike 和 fanOutLike——必须
+   * 共享同一 state 对象，否则 fanOutLike 里调 toggleLike 会出现"内层
+   * 保存后外层再保存覆盖回去"的状态漂移 bug。
+   */
+  private applyLikeToggle(
+    state: MusicSessionState,
+    provider: MusicProvider,
+    trackId: string,
+  ): boolean {
+    const psState = state.providers[provider];
+    const wasLiked = psState.liked.has(trackId);
+    if (wasLiked) {
+      psState.liked.delete(trackId);
+    } else {
+      psState.liked.add(trackId);
+    }
+    return wasLiked;
+  }
+
+  /** 把 liked 状态同步到远端平台（best-effort，失败仅记录日志）。 */
+  private async syncLikeRemote(
+    session: Session,
+    provider: MusicProvider,
+    trackId: string,
+    newLiked: boolean,
+  ): Promise<void> {
+    // NetEase 是唯一真正有公开 ❤ API 的平台；QQ / Deezer 走 radio-like
+    // / favorites API 都要登录态 + 签名，本地记录即可。Spotify 接入后
+    // 这边再补（届时会需要 PKCE access token 持久化到 session）。
+    if (provider === 'netease') {
+      const ps = session.providers[provider];
+      if (!ps?.musicU) return;
+      try {
+        if (newLiked) {
+          await this.netease.like(ps, trackId);
+        } else {
+          // netease 取消 ❤ = 移到 trash，netease.unlike 已实现
+          await this.netease.unlike(ps, trackId);
+        }
+      } catch (err) {
+        this.logger.warn(
+          `netease like sync failed: ${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
+  async toggleLike(
+    session: Session,
+    provider: MusicProvider,
+    trackId: string,
+  ): Promise<{ success: boolean; liked: boolean }> {
+    const state = this.loadState(session);
+    const wasLiked = this.applyLikeToggle(state, provider, trackId);
+    this.saveState(session, state);
+    // 同步到远端（best-effort，失败不影响本地）
+    void this.syncLikeRemote(session, provider, trackId, !wasLiked);
+    return { success: true, liked: !wasLiked };
+  }
+
+  /**
+   * Heart fan-out：把"心动"一次性写到一个统一 track 的所有平台 source。
+   *
+   * liked=true：对每个 source 反转 like 状态，收集成功（wasLiked=false → 写入）
+   *   的平台，写入 state.fanOut[mergedId]（作为未来 unlike 的幂等依据）。
+   * liked=false：按 state.fanOut[mergedId] 里的平台列表反写 unlike（保证幂等
+   *   ——只动我们之前心过的）。
+   *
+   * 单平台失败不阻塞其他平台；fannedOutTo 列出真正被这次操作影响的平台。
+   *
+   * 实现要点：必须复用 applyLikeToggle + syncLikeRemote，**不能**直接调
+   * toggleLike——因为 toggleLike 内部 loadState / saveState 会和 fanOut
+   * 的外层 saveState 互相覆盖，导致"内层修改被外层旧 state 写回去"。
+   */
+  async fanOutLike(
+    session: Session,
+    mergedId: string,
+    sources: Array<{ platform: MusicProvider; trackId: string }>,
+    liked: boolean,
+  ): Promise<{ success: boolean; liked: boolean; fannedOutTo: MusicProvider[] }> {
+    const state = this.loadState(session);
+    const fannedOutTo: MusicProvider[] = [];
+
+    if (liked) {
+      for (const src of sources) {
+        try {
+          const wasLiked = this.applyLikeToggle(
+            state,
+            src.platform,
+            src.trackId,
+          );
+          // 只有"写入"（wasLiked=false）才计入 fannedOutTo——如果用户
+          // 之前已经单独心过这个 track，重复心动不应再被视作"新 fan-out"。
+          if (!wasLiked) fannedOutTo.push(src.platform);
+          void this.syncLikeRemote(session, src.platform, src.trackId, true);
+        } catch (err) {
+          this.logger.warn(
+            `fan-out like failed (${src.platform}/${src.trackId}): ${(err as Error).message}`,
+          );
+        }
+      }
+      state.fanOut[mergedId] = fannedOutTo;
+    } else {
+      // 取消心动：按之前 fanOut 记录的平台列表 unlike（幂等）。
+      const toUnlike = state.fanOut[mergedId] ?? [];
+      for (const platform of toUnlike) {
+        const src = sources.find((s) => s.platform === platform);
+        if (!src) continue;
+        try {
+          const wasLiked = this.applyLikeToggle(
+            state,
+            platform,
+            src.trackId,
+          );
+          // 同样：只有"清掉"（wasLiked=true）才计入。
+          if (wasLiked) fannedOutTo.push(platform);
+          void this.syncLikeRemote(session, platform, src.trackId, false);
+        } catch (err) {
+          this.logger.warn(
+            `fan-out unlike failed (${platform}/${src.trackId}): ${(err as Error).message}`,
+          );
+        }
+      }
+      delete state.fanOut[mergedId];
+    }
+
+    this.saveState(session, state);
+    return { success: true, liked, fannedOutTo };
+  }
+
+  /** 当前 session 中某 mergedId 是否已被 fan-out 心动过。 */
+  isFanOutLiked(state: MusicSessionState, mergedId: string): boolean {
+    return (state.fanOut[mergedId]?.length ?? 0) > 0;
   }
 
   /**

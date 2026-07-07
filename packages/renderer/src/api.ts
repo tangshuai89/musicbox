@@ -99,6 +99,29 @@ export async function toggleLike(
   );
 }
 
+/**
+ * Heart fan-out：把一个 unified track 的 ❤ 一次性写到所有 hasCopyright 的平台。
+ * sources 是 UnifiedSearchItem.sources 列表（去掉 hasCopyright=false 的）。
+ *
+ * 返回的 fannedOutTo 是这次实际写入/清掉的平台——前端 UI 可以据此展示
+ * "❤ (3)" 这种小角标，告诉用户心动了多少个平台。失败的部分不在列表里
+ * （单平台同步失败不影响整体 success）。
+ */
+export async function fanOutLike(
+  mergedId: string,
+  sources: Array<{ platform: MusicProvider; trackId: string }>,
+  liked: boolean,
+): Promise<{ success: boolean; liked: boolean; fannedOutTo: MusicProvider[] }> {
+  return json(
+    await fetch(`${API_BASE}/music/like/merged`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mergedId, sources, liked }),
+    }),
+  );
+}
+
 export async function dislike(
   provider: MusicProvider,
   trackId: string,

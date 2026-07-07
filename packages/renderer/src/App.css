@@ -942,6 +942,7 @@
   background: transparent;
   border: none;
   cursor: pointer;
+  position: relative;
 }
 
 .control-btn:hover:not(:disabled) {
@@ -982,6 +983,27 @@
 .like-btn.liked:hover {
   color: var(--heart-active);
   background: rgba(239, 68, 68, 0.08);
+}
+
+/** Heart fan-out 角标：显示这一首被心动了多少个平台（>1 才显示，避免
+ *  视觉噪音——单平台时 ❤ 自身已经表达"心动了"语义）。绝对定位到 ❤ 按钮
+ *  的右上角，背景用品牌色制造"小红点"感。 */
+.like-btn-badge {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--heart-active, #ef4444);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  box-shadow: 0 0 0 2px rgba(24, 24, 28, 0.96);
+  pointer-events: none;
 }
 
 .dislike-btn:hover:not(:disabled) {

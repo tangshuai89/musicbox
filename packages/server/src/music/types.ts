@@ -39,3 +39,21 @@ export interface ProviderSearchRaw {
   total: number;
   error?: string;
 }
+
+/** Heart fan-out 请求体。sources 是搜索结果里这个 merged track 的所有平台源；
+ *  liked=true 时把 sources 里全部 hasCopyright=true 的写入；false 时按持久化的
+ *  fanOut[mergedId] 列表反写——这样可以幂等清除，避免对"已经没喜欢的平台"误调
+ *  unlike。 */
+export interface FanOutLikeRequest {
+  mergedId: string;
+  sources: Array<{ platform: MusicProvider; trackId: string }>;
+  liked: boolean;
+}
+
+/** Heart fan-out 响应。fannedOutTo 列这次实际写入/清掉的平台——失败的平台
+ *  不在列表里（best-effort 同步：单平台挂了不影响整体）。 */
+export interface FanOutLikeResponse {
+  success: boolean;
+  liked: boolean;
+  fannedOutTo: MusicProvider[];
+}

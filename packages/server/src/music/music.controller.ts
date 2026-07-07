@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Body,
   Param,
   Query,
   Req,
@@ -14,6 +15,7 @@ import { normalizeProvider, MusicProvider } from '../common/provider';
 import { SessionService } from '../common/session';
 import { DeezerMusicProvider } from './deezer.provider';
 import { QqQuality } from './qq.provider';
+import type { FanOutLikeResponse } from './types';
 
 @Controller('music')
 export class MusicController {
@@ -89,6 +91,59 @@ export class MusicController {
   @Get('deezer/editorials')
   deezerEditorials() {
     return { items: DeezerMusicProvider.getEditorials() };
+  }
+
+  /**
+   * Heart fan-out：把一个统一 track 的 ❤ 一次性写到所有 hasCopyright 的平台。
+   *
+   * 请求体: { mergedId, sources: [{platform, trackId}], liked }
+   * 响应: { success, liked, fannedOutTo: MusicProvider[] }
+   *
+   * ⚠️ 必须注册在 /like/:trackId 之前 —— Express 路由按声明顺序匹配，
+   * "like/merged" 会被 "like/:trackId" 截胡（trackId=merged），走到老
+   * toggleLike 路径。
+   */
+  @Post('like/merged')
+  async likeMerged(
+    @Body() body: {
+      mergedId?: string;
+      sources?: Array<{ platform: string; trackId: string }>;
+      liked?: boolean;
+    },
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<FanOutLikeResponse> {
+    if (!body?.mergedId || typeof body.mergedId !== 'string') {
+      throw new BadRequestException('mergedId 必填');
+    }
+    if (!Array.isArray(body.sources) || body.sources.length === 0) {
+      throw new BadRequestException('sources 至少 1 项');
+    }
+    if (typeof body.liked !== 'boolean') {
+      throw new BadRequestException('liked 必填（true / false）');
+    }
+    const sources: Array<{ platform: MusicProvider; trackId: string }> = [];
+    for (const s of body.sources) {
+      if (
+        !s ||
+        typeof s.platform !== 'string' ||
+        typeof s.trackId !== 'string' ||
+        !s.trackId.length
+      ) {
+        throw new BadRequestException('sources 每项需要 platform + trackId');
+      }
+      sources.push({
+        platform: normalizeProvider(s.platform),
+        trackId: s.trackId,
+      });
+    }
+    const session = this.sessionService.resolve(req, res);
+    return this.musicService.fanOutLike(
+      session,
+      body.mergedId,
+      sources,
+      body.liked,
+    );
   }
 
   @Post('like/:trackId')

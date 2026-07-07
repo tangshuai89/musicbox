@@ -3,6 +3,7 @@ import {
   fetchNextTrack,
   fetchDeezerEditorials,
   toggleLike,
+  fanOutLike,
   dislike,
   getAuthStatus,
   logout,
@@ -213,7 +214,20 @@ export default function App() {
   });
   // 搜索模式的客户端队列。非空时 loadNextTrack 在结果里前进，而不是走
   // 服务端电台。用 ref 存，避免 loadNextTrack 的闭包读到旧值。
-  const queueRef = useRef<{ tracks: Track[]; idx: number } | null>(null);
+  //
+  // 统一搜索（P0 之后）会给这个对象多带一个 unifiedItems 字段和 mergedId：
+  // - unifiedItems: 原始 UnifiedSearchItem[]，用来做 heart fan-out
+  // - mergedId: 当前播放这一首对应的 merged id（fan-out 入参）
+  // 单平台路径（电台 / 直连）这两个字段都没有，handleLike 走老路径。
+  const queueRef = useRef<{
+    tracks: Track[];
+    idx: number;
+    unifiedItems?: UnifiedSearchItem[];
+    mergedId?: string;
+  } | null>(null);
+  // 当前 track 是否被 fan-out 心动了（fannedOutTo.length > 0）。
+  // 用于 ❤ 图标高亮 + 后面显示"3❤"小角标。
+  const [fanOutCount, setFanOutCount] = useState<number>(0);
   // 切换音源时若当前有歌在放，标记跳过一次「provider 变化触发的自动加载」，
   // 让当前歌继续放到结束 / 用户点下一首，才从新音源取歌（不打断播放）。
   const skipAutoLoadRef = useRef(false);
@@ -546,7 +560,10 @@ export default function App() {
 
   /** 从搜索面板点某一行：把 UnifiedSearchItem[] 解析成可播放 Track[] 作为队列。
    *  没有可播放 bestSource 的（所有平台都无版权）会从队列里剔除——SearchPanel
-   *  那一行已经置灰了，正常路径走不到；这里兜个底防止队列里出现"无主"项。 */
+   *  那一行已经置灰了，正常路径走不到；这里兜个底防止队列里出现"无主"项。
+   *
+   *  顺带把 unifiedItems + mergedId 存到 queueRef，handleLike 据此决定走
+   *  fanOutLike 路径。 */
   const handlePlaySearch = useCallback(
     (unifiedItems: UnifiedSearchItem[], index: number) => {
       const playable: { track: Track; srcIndex: number }[] = [];
@@ -563,12 +580,19 @@ export default function App() {
         setError('没有可播放的音源');
         return;
       }
+      const target = unifiedItems[targetSrcIndex];
       queueRef.current = {
         tracks: playable.map((p) => p.track),
         idx: startIdx,
+        unifiedItems,
+        mergedId: target?.id,
       };
       setSearchOpen(false);
       setError(null);
+      // 切换搜索上下文时清掉旧的 fan-out 计数。新的 mergedId 对应的
+      // ❤ 状态得 server 那边查过才知道——本轮先重置为 0，TODO: 后续
+      // 拉一次 GET /music/like/merged 状态。
+      setFanOutCount(0);
       presentTrack(playable[startIdx].track);
     },
     [presentTrack],
@@ -833,9 +857,34 @@ export default function App() {
 
   const handleLike = async () => {
     if (!track || !provider) return;
+    // 统一搜索路径：fan-out 到所有 hasCopyright 的平台。
+    // 判定方式：当前 track 来自 unified queueRef（带 mergedId），
+    // 且 unifiedItems 里能找到它。SearchPanel 那一侧已经过滤掉
+    // bestSource=null 的，所以这里能 fan-out 的前提是至少一个 source
+    // 有版权。
+    const q = queueRef.current;
+    const current = q?.unifiedItems?.[q.idx];
+    if (q?.mergedId && current && current.bestSource) {
+      const nextLiked = !(fanOutCount > 0);
+      const sources = current.sources
+        .filter((s) => s.hasCopyright)
+        .map((s) => ({ platform: s.platform, trackId: s.trackId }));
+      try {
+        const result = await fanOutLike(q.mergedId, sources, nextLiked);
+        // 成功：更新 ❤ 角标数。fannedOutTo 这次实际写到的平台数——
+        // 失败的不在数组里，所以这个数 ≤ sources.length。
+        setFanOutCount(nextLiked ? result.fannedOutTo.length : 0);
+        setTrack((prev) => (prev ? { ...prev, liked: nextLiked } : prev));
+      } catch (e) {
+        setError(`心动作业失败：${(e as Error).message}`);
+      }
+      return;
+    }
+    // 单平台路径：电台 / 现在的 now-playing，行为完全保留不变。
     const result = await toggleLike(provider, track.id);
     if (result.success) {
       setTrack((prev) => (prev ? { ...prev, liked: result.liked } : prev));
+      setFanOutCount(0);
     }
   };
 
@@ -1308,11 +1357,18 @@ export default function App() {
           className="control-btn like-btn"
           onClick={handleLike}
           disabled={!track}
-          title="红心"
+          title={
+            fanOutCount > 0
+              ? `已 fan-out 心动了 ${fanOutCount} 个平台`
+              : '红心'
+          }
         >
           <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
             <path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z" />
           </svg>
+          {fanOutCount > 1 && (
+            <span className="like-btn-badge">{fanOutCount}❤</span>
+          )}
         </button>
 
         <button

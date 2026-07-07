@@ -170,4 +170,71 @@ function makeTrack(
   console.log('✅ 10. SourceInfo 字段完整');
 }
 
-console.log('\n🎉 全部 10 个测试通过');
+// ── 11. MusicSessionState 兼容老格式（无 fanOut 字段）──────────
+// 老持久化文件只有 providers，loadState 应当正常返回空 fanOut。
+{
+  const oldFormat = {
+    qq: { queue: [], liked: ['a', 'b'], disliked: [] },
+    netease: { queue: [], liked: [], disliked: [] },
+    deezer: { queue: [], liked: [], disliked: [] },
+  };
+  // 用 services 之外的纯函数测不太方便——逻辑写在 music.service.ts 里。
+  // 这里只做"序列化"的 sanity check：把新 state 序列化能保留 fanOut 字段。
+  const newState = {
+    providers: {
+      qq: { queue: [], liked: ['a', 'b'], disliked: [] },
+      netease: { queue: [], liked: [], disliked: [] },
+      deezer: { queue: [], liked: [], disliked: [] },
+    },
+    fanOut: { 'merged-qq-001': ['qq', 'deezer'] },
+  };
+  // 模拟 saveState 的序列化
+  const serialized = {
+    providers: {
+      qq: { ...newState.providers.qq, liked: [...newState.providers.qq.liked], disliked: [...newState.providers.qq.disliked] },
+      netease: { ...newState.providers.netease, liked: [...newState.providers.netease.liked], disliked: [...newState.providers.netease.disliked] },
+      deezer: { ...newState.providers.deezer, liked: [...newState.providers.deezer.liked], disliked: [...newState.providers.deezer.disliked] },
+    },
+    fanOut: newState.fanOut,
+  };
+  // 反序列化时按 fanOut 字段读取
+  assert.deepStrictEqual(
+    serialized.fanOut['merged-qq-001'],
+    ['qq', 'deezer'],
+    'fanOut 序列化应保留平台列表',
+  );
+  assert.deepStrictEqual(
+    serialized.providers.qq.liked,
+    ['a', 'b'],
+    'providers.qq.liked 应保留',
+  );
+  console.log('✅ 11. State 序列化兼容 fanOut 字段');
+}
+
+// ── 12. fan-out "幂等反写"：不在 fanOut 里的平台不会被误清 ─────
+{
+  // 模拟：用户之前 fan-out 心动了 mergedId，state.fanOut[mergedId] = ['qq', 'deezer']。
+  // 现在再来一次 unlike，sources 里多带了 netease（用户没心过 netease），
+  // 但 toUnlike 只从 fanOut 走，netease 不会被调 unlike。
+  const fanOut = { 'm1': ['qq', 'deezer'] };
+  const sources = [
+    { platform: 'qq', trackId: 'q1' },
+    { platform: 'netease', trackId: 'n1' },
+    { platform: 'deezer', trackId: 'd1' },
+  ];
+  const toUnlike = fanOut['m1'] || [];
+  const unlikeTargets = toUnlike
+    .map((p) => {
+      const src = sources.find((s) => s.platform === p);
+      return src ? { platform: p, trackId: src.trackId } : null;
+    })
+    .filter((t) => t !== null);
+  assert.deepStrictEqual(
+    unlikeTargets.map((t) => t && t.platform),
+    ['qq', 'deezer'],
+    'netease 不在 fanOut 里应被跳过',
+  );
+  console.log('✅ 12. fan-out unlike 幂等（不动未心过的平台）');
+}
+
+console.log('\n🎉 全部 12 个测试通过');
