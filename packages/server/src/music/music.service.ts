@@ -14,9 +14,13 @@ import { type LyricLine } from '../common/lyrics';
 import type {
   UnifiedSearchResult,
   UnifiedSearchItem,
-  SourceInfo,
   ProviderSearchRaw,
 } from './types';
+import {
+  buildUnifiedItems,
+  dedupTracks,
+  normalizeKey,
+} from './search.util';
 
 export interface Track {
   id: string;
@@ -292,10 +296,10 @@ export class MusicService {
     }
 
     // 去重: 歌名+歌手标准化 → 第一个出现的 track 作为主记录。
-    const deduped = this.dedupTracks(allTracks);
+    const deduped = dedupTracks(allTracks);
 
     // 构建 UnifiedSearchItem，每个 item 聚合各平台的 source。
-    const items = this.buildUnifiedItems(deduped, allTracks);
+    const items = buildUnifiedItems(deduped, allTracks);
 
     // 分页（服务端分页，不依赖前端截断）。
     const total = items.length;
@@ -333,6 +337,18 @@ export class MusicService {
           30,
         );
       }
+      // 统一搜索结果里 sources[].url 要带可播放的代理路径——provider.search()
+      // 返回的 track.audioUrl 可能是空（QQ/网易云 URL 短期过期，播放时由
+      // getStreamUrl 重新拿），所以这里替换成后端代理的相对路径，前端拼 base
+      // 后直接当 <audio src> 用。Dealer 的 audioUrl 已是 http 完整 URL（30s
+      // 预览），保留原值。
+      tracks = tracks.map((t) => ({
+        ...t,
+        audioUrl:
+          provider === 'deezer' && t.audioUrl && t.audioUrl.startsWith('http')
+            ? t.audioUrl
+            : this.streamPath(t),
+      }));
       return { platform: provider, tracks, total: tracks.length };
     } catch (err) {
       return {
@@ -344,85 +360,10 @@ export class MusicService {
     }
   }
 
-  /** 歌名+歌手标准化: 全角→半角、去空格、去标点、全小写。 */
+  /** 歌名+歌手标准化: 全角→半角、去空格、去标点、全小写。
+   *  实际逻辑在 search.util.ts，方便白盒测试。 */
   private normalizeKey(title: string, artist: string): string {
-    const raw = `${title} ${artist}`
-      // 全角 → 半角
-      .replace(/[！-～]/g, (ch) =>
-        String.fromCharCode(ch.charCodeAt(0) - 0xFEE0),
-      )
-      // 去掉空格、常见标点
-      .replace(/[\s\-_,.()（）【】《》'"′″·&+/!?！？:：;；]+/g, '')
-      .toLowerCase();
-    return raw;
-  }
-
-  /** 去重: 相同 normalizeKey 的歌合并为一条，保留第一个出现的。 */
-  private dedupTracks(
-    all: { track: Track; platform: MusicProvider }[],
-  ): Map<string, Track> {
-    const map = new Map<string, Track>();
-    for (const { track, platform: _p } of all) {
-      const key = this.normalizeKey(track.title, track.artist);
-      if (!map.has(key)) {
-        map.set(key, track);
-      }
-    }
-    return map;
-  }
-
-  /** 播放优先级: qq > netease > deezer。只有 hasCopyright 的才可选。 */
-  private static readonly PLAY_PRIORITY: MusicProvider[] = [
-    'qq',
-    'netease',
-    'deezer',
-  ];
-
-  /** 将去重后的 track 和所有平台的原始结果聚合为 UnifiedSearchItem。 */
-  private buildUnifiedItems(
-    deduped: Map<string, Track>,
-    all: { track: Track; platform: MusicProvider }[],
-  ): UnifiedSearchItem[] {
-    // group: dedup key → 各平台的 SourceInfo
-    const grouped = new Map<
-      string,
-      { main: Track; sources: SourceInfo[] }
-    >();
-
-    for (const { track } of all) {
-      const key = this.normalizeKey(track.title, track.artist);
-      const main = deduped.get(key)!;
-      const source: SourceInfo = {
-        platform: track.provider,
-        trackId: track.id,
-        // QQ/网易云的搜索结果是可播放的（hasCopyright 取决于是否有 purl/url，
-        // 搜索阶段无法完全判断，先标记为 true，播放时 getStreamUrl 才最终裁决）。
-        hasCopyright: true,
-        url: track.audioUrl,
-      };
-
-      if (!grouped.has(key)) {
-        grouped.set(key, { main, sources: [] });
-      }
-      grouped.get(key)!.sources.push(source);
-    }
-
-    return [...grouped.values()].map(({ main, sources }) => {
-      const bestSource =
-        MusicService.PLAY_PRIORITY.find((p) =>
-          sources.some((s) => s.platform === p),
-        ) ?? null;
-      return {
-        id: `merged-${main.provider}-${main.id}`,
-        title: main.title,
-        artist: main.artist,
-        album: main.album,
-        coverUrl: main.coverUrl,
-        duration: main.duration,
-        sources,
-        bestSource,
-      };
-    });
+    return normalizeKey(title, artist);
   }
 
   /** 后端代理相对路径；QQ 带上 media_mid 以便播放时选高音质。 */

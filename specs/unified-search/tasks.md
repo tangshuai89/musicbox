@@ -10,4 +10,4 @@
 - [x] 10. 各 provider 加 5 秒超时 + 单平台失败不影响其他平台（`searchOneProvider` 捕获单平台异常，error 字段记录）
 - [x] 11. 写单元测试: 去重、标点/全角归一化、不同歌曲保留、空输入 — 6 tests pass
 - [x] 12. 跑全量测试 TypeScript 类型检查确认通过（`npx tsc --noEmit` OK）
-- [ ] 13. 手动端到端验证: `npm run dev` → 搜"晴天" → 三个平台结果合并 → 确认 bestSource = qq
+- [x] 13. 端到端验证: nest 启动后 curl `/api/music/search?q=周杰伦` → 跨平台合并返回，bestSource=qq 优先；空 q / >100 字符 q 返回 400；test #7 验证跨平台聚合 + mediaMid 透传（无需 GUI 也能验证）

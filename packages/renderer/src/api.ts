@@ -162,6 +162,88 @@ export async function searchTracks(
   return res.items;
 }
 
+/** 统一搜索结果里每个平台的源信息（服务端 SourceInfo 的前端镜像）。 */
+export interface UnifiedSourceInfo {
+  platform: MusicProvider;
+  trackId: string;
+  hasCopyright: boolean;
+  url: string;
+  mediaMid?: string;
+}
+
+/** 统一搜索结果（去重合并后）单条。 */
+export interface UnifiedSearchItem {
+  id: string;
+  title: string;
+  artist: string;
+  album: string;
+  coverUrl: string;
+  duration: number;
+  sources: UnifiedSourceInfo[];
+  bestSource: MusicProvider | null;
+}
+
+/** 统一搜索的整页响应。 */
+export interface UnifiedSearchResult {
+  q: string;
+  total: number;
+  page: number;
+  pageSize: number;
+  items: UnifiedSearchItem[];
+}
+
+/**
+ * 跨平台统一搜索。服务端同时查 QQ / 网易云 / Deezer，合并去重后分页返回。
+ * 单平台失败不阻塞其他平台——items 仍可能非空，errors 在 server log 里有。
+ *
+ * 取消支持：传入 AbortSignal 即可中断进行中的请求。debounce 重新触发时
+ * 把上一次的 controller abort() 掉，避免旧响应覆盖新结果。
+ */
+export async function searchUnified(
+  q: string,
+  page = 1,
+  pageSize = 20,
+  signal?: AbortSignal,
+): Promise<UnifiedSearchResult> {
+  const params = new URLSearchParams({
+    q,
+    page: String(page),
+    pageSize: String(pageSize),
+  });
+  return json<UnifiedSearchResult>(
+    await fetch(`${API_BASE}/music/search?${params.toString()}`, {
+      credentials: 'include',
+      signal,
+    }),
+  );
+}
+
+/**
+ * 把 UnifiedSearchItem 解析成可播放的 Track：按 bestSource（已有版权 + 优先级
+ * 最高）取对应的 source，把 platform-specific 的 id / audioUrl / mediaMid
+ * 拼回标准 Track 形状。bestSource 为 null 表示「所有平台都无版权」，返回
+ * null 让 UI 走灰色不可播放态。
+ */
+export function pickPlayableTrack(
+  item: UnifiedSearchItem,
+): Track | null {
+  if (!item.bestSource) return null;
+  const src = item.sources.find((s) => s.platform === item.bestSource);
+  if (!src) return null;
+  return {
+    id: src.trackId,
+    provider: src.platform,
+    title: item.title,
+    artist: item.artist,
+    album: item.album,
+    coverUrl: item.coverUrl,
+    audioUrl: src.url,
+    duration: item.duration,
+    liked: false,
+    mediaMid: src.mediaMid,
+  };
+}
+
 export interface DeezerEditorial {
   id: number;
   name: string;

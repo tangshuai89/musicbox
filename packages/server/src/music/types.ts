@@ -7,6 +7,8 @@ export interface SourceInfo {
   trackId: string;
   hasCopyright: boolean;
   url: string;
+  /** QQ 高音质取流用 media_mid（standard 不需要，high/lossless 必须）。 */
+  mediaMid?: string;
 }
 
 /** 去重合并后的一条搜索结果。 */

@@ -9,6 +9,7 @@ import {
   loginQqCookie,
   loginNeteaseCookie,
   fetchLyrics,
+  pickPlayableTrack,
   PROVIDER_LABELS,
   QQ_QUALITY_LABELS,
 } from './api';
@@ -20,6 +21,7 @@ import type {
   DeezerEditorial,
   QqQuality,
   LyricLine,
+  UnifiedSearchItem,
 } from './api';
 import SourceSelect from './SourceSelect';
 import NeteaseCookieModal from './NeteaseCookieModal';
@@ -542,13 +544,32 @@ export default function App() {
     }
   }, [provider, deezerPreset, presentTrack]);
 
-  /** 从搜索面板点某一行：整批结果作为队列，从 index 开始播。 */
+  /** 从搜索面板点某一行：把 UnifiedSearchItem[] 解析成可播放 Track[] 作为队列。
+   *  没有可播放 bestSource 的（所有平台都无版权）会从队列里剔除——SearchPanel
+   *  那一行已经置灰了，正常路径走不到；这里兜个底防止队列里出现"无主"项。 */
   const handlePlaySearch = useCallback(
-    (results: Track[], index: number) => {
-      queueRef.current = { tracks: results, idx: index };
+    (unifiedItems: UnifiedSearchItem[], index: number) => {
+      const playable: { track: Track; srcIndex: number }[] = [];
+      unifiedItems.forEach((it, i) => {
+        const t = pickPlayableTrack(it);
+        if (t) playable.push({ track: t, srcIndex: i });
+      });
+      // 把被点的 index 在 unifiedItems 里的位置映射到 playable[] 的位置
+      const targetSrcIndex = unifiedItems[index] ? index : 0;
+      const startIdx = playable.findIndex(
+        (p) => p.srcIndex === targetSrcIndex,
+      );
+      if (startIdx < 0 || playable.length === 0) {
+        setError('没有可播放的音源');
+        return;
+      }
+      queueRef.current = {
+        tracks: playable.map((p) => p.track),
+        idx: startIdx,
+      };
       setSearchOpen(false);
       setError(null);
-      presentTrack(results[index]);
+      presentTrack(playable[startIdx].track);
     },
     [presentTrack],
   );
@@ -1023,11 +1044,11 @@ export default function App() {
           </select>
         )}
 
-        {(provider === 'qq' || provider === 'netease') && auth.loggedIn && (
+        {provider && (
           <button
             className="titlebar-btn search-btn"
             onClick={() => setSearchOpen(true)}
-            title="搜索歌手 / 歌名"
+            title="搜索歌手 / 歌名（跨平台统一搜索）"
           >
             🔍 搜索
           </button>
@@ -1349,9 +1370,8 @@ export default function App() {
         />
       )}
 
-      {searchOpen && (provider === 'qq' || provider === 'netease') && (
+      {searchOpen && provider && (
         <SearchPanel
-          provider={provider}
           onPlay={handlePlaySearch}
           onClose={() => setSearchOpen(false)}
         />
