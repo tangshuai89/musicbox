@@ -1,0 +1,12 @@
+- [x] 1. 在 music/types.ts 加 FanOutLikeRequest / FanOutLikeResponse 类型
+- [x] 2. music.service.ts 加 fanOutLike(session, mergedId, sources, liked)，内部逐个调 toggleLike，收集成功的平台
+- [x] 3. music.service.ts 的 loadState / saveState 扩展支持 fanOut 字段
+- [x] 4. music.controller.ts 加 POST /music/like/merged
+- [x] 5. api.ts 加 fanOutLike(mergedId, sources, liked)
+- [x] 6. App.tsx 扩展 queueRef 持 unifiedItems?，handleLike 根据上下文选 toggleLike vs fanOutLike
+- [x] 7. SearchPanel → handlePlaySearch 时把 unifiedItems 透传给 App 存到 queueRef
+- [x] 8. 喜欢状态显示：❤ 后带"3❤"小角标（fannedOutTo.length > 1 才显示）
+- [x] 9. 单平台 like 路径（电台/直连）继续走 toggleLike 不变
+- [x] 10. 写白盒测试：fanOut state 序列化、幂等反写（不动未心过的平台）
+- [x] 11. typecheck + 全量测试通过（12/12）
+- [x] 12. e2e: nest 启动后 curl /music/like/merged 验证 happy/validation/unlike/single-platform 路径

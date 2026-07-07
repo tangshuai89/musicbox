@@ -1,0 +1,10 @@
+- [x] 1. packages/server/src/music/spotify.provider.ts: 实现 MusicProvider 接口 (search/getStreamPath/like/unlike/fetchRadioBatch/fetchLiked + PKCE startAuth/exchangeCode + token refresh)
+- [x] 2. OAuth PKCE: /auth/spotify/start + /callback + token refresh
+- [x] 3. 客户端 ID 管理（同 DeepSeek key，存 secrets.json:spotify-client-id）
+- [x] 4. 接入 MusicProvider 注册表（common/provider.ts 加 'spotify'）
+- [x] 5. 接入 searchUnified / getStreamPath / fanOutLike / importLiked
+- [x] 6. 前端 api.ts: TODO（剩余，未做）
+- [x] 7. 前端音源选择页加 Spotify 项：TODO（剩余，未做——本轮只做后端）
+- [x] 8. 白盒测试 7 条：PKCE URL 包含所有 OAuth 参数 / exchangeCode invalid state 拒绝 / isConfigured 边界 / token 过期 refresh 路径 / saveToken 不可变
+- [x] 9. typecheck + 39/39 测试通过（search 12 + match 8 + reco 12 + spotify 7）
+- [x] 10. e2e: 5 个 case (status / no client_id 400 / 短 client_id 400 / set client_id 200 / start returns real accounts.spotify.com URL)

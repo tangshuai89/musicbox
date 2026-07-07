@@ -1,0 +1,12 @@
+- [x] 1. ~~esbuild bundle 单文件~~ 改走 tsc 编译 + 整 dist/ 路线（esbuild 丢 decorator metadata，NestJS DI 挂）
+- [x] 2. ~~esbuild devDep~~ 移除（不再用）
+- [x] 3. ~~esbuild 配置~~ 移除
+- [x] 4. Electron main: prod 模式下 spawn sidecar 子进程（用 ELECTRON_RUN_AS_NODE=1）
+- [x] 5. Electron main: waitForSidecar() 轮询 /music/deezer/editorials 30 秒超时
+- [x] 6. Electron main: before-quit + window-all-closed 时 kill sidecar
+- [x] 7. preload: 暴露 apiBase + onSidecarReady
+- [x] 8. renderer api.ts: resolveApiOrigin() 优先读 electronAPI.apiBase → env.DEV → localhost
+- [x] 9. electron-builder config: extraResources 加 server/dist
+- [x] 10. tsc 编译 + node dist/main.js 独立启动 :3200 已验过
+- [x] 11. typecheck + 39/39 测试通过
+- [ ] 12. 文档：README "Build for production" 一节更新（留给下一轮）

@@ -1,0 +1,9 @@
+- [x] 1. 在 server/src/match/match.service.ts 写 MatchService 类（mergeLibrary + findEquivalent）
+- [x] 2. mergeLibrary 复用 buildUnifiedItems（search.util.ts）
+- [x] 3. findEquivalent 给一个 seed track 并行查其他平台，按 duration ±3s 过滤
+- [x] 4. 单平台超时 5 秒（用 Promise.race + setTimeout）不影响其他平台
+- [x] 5. confidence 字段：所有平台都找到且 duration 匹配 = exact，只找到一个 = fuzzy，全没有 = none
+- [x] 6. music.module.ts 注入 MatchService
+- [x] 7. 白盒测试：mergeLibrary 跨平台去重 / findEquivalent duration gate / 超时 / 平台 throw / 无匹配
+- [x] 8. typecheck + 全量测试通过（search 12 + match 8 = 20 条）
+- [x] 9. 不接入 P2 以外的消费者；P2 (liked 导入) 用得上

@@ -17,7 +17,7 @@
     "build": "npm run build:server && npm run build:renderer && npm run build:electron",
     "lint": "cd packages/renderer && npm run lint",
     "typecheck": "cd packages/renderer && npm run typecheck",
-    "test": "cd packages/server && ts-node src/music/search.test.ts"
+    "test": "cd packages/server && ts-node src/music/search.test.ts && ts-node src/match/match.test.ts && ts-node src/reco/reco.test.ts && ts-node src/music/spotify.test.ts && ts-node src/music/like.e2e.test.ts"
   },
   "author": "tangshuai89",
   "license": "MIT",

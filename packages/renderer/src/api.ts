@@ -7,18 +7,27 @@
 // relative path would otherwise resolve against the wrong origin).
 //
 // `import.meta.env.DEV` is true only when Vite is running. In production
-// builds, we fall back to http://localhost:3200 — the user is expected
-// to have the NestJS server running on that port (Electron could be
-// configured to start it as a child process in a follow-up).
-const API_ORIGIN = import.meta.env.DEV ? '' : 'http://localhost:3200';
-const API_BASE = API_ORIGIN + '/api';
+// builds, we read the sidecar URL from window.electronAPI.apiBase
+// (set by the preload bridge after the main process spawns the NestJS
+// sidecar). If neither is set (running prod build without Electron),
+// we fall back to http://localhost:3200 and let the user deal with it.
+function resolveApiOrigin(): string {
+  // In Electron, prefer the sidecar URL that main process pushed via preload.
+  if (typeof window !== 'undefined' && (window as { electronAPI?: { apiBase?: string } }).electronAPI?.apiBase) {
+    return (window as { electronAPI: { apiBase: string } }).electronAPI.apiBase;
+  }
+  if (import.meta.env.DEV) return '';
+  return 'http://localhost:3200';
+}
+const API_BASE = resolveApiOrigin() + '/api';
 
-export type MusicProvider = 'qq' | 'netease' | 'deezer';
+export type MusicProvider = 'qq' | 'netease' | 'deezer' | 'spotify';
 
 export const PROVIDER_LABELS: Record<MusicProvider, string> = {
   qq: 'QQ 音乐',
   netease: '网易云音乐',
   deezer: 'Deezer',
+  spotify: 'Spotify',
 };
 
 export interface Track {
@@ -99,6 +108,29 @@ export async function toggleLike(
   );
 }
 
+/**
+ * Heart fan-out：把一个 unified track 的 ❤ 一次性写到所有 hasCopyright 的平台。
+ * sources 是 UnifiedSearchItem.sources 列表（去掉 hasCopyright=false 的）。
+ *
+ * 返回的 fannedOutTo：liked=true 时是当前 mergedId 心动过的**全部平台**
+ * （含之前单独心过的），UI 角标直接用它的 length 表达"这首歌在几个平台有 ❤"；
+ * liked=false 时是空数组。
+ */
+export async function fanOutLike(
+  mergedId: string,
+  sources: Array<{ platform: MusicProvider; trackId: string }>,
+  liked: boolean,
+): Promise<{ success: boolean; liked: boolean; fannedOutTo: MusicProvider[] }> {
+  return json(
+    await fetch(`${API_BASE}/music/like/merged`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mergedId, sources, liked }),
+    }),
+  );
+}
+
 export async function dislike(
   provider: MusicProvider,
   trackId: string,
@@ -162,6 +194,88 @@ export async function searchTracks(
   return res.items;
 }
 
+/** 统一搜索结果里每个平台的源信息（服务端 SourceInfo 的前端镜像）。 */
+export interface UnifiedSourceInfo {
+  platform: MusicProvider;
+  trackId: string;
+  hasCopyright: boolean;
+  url: string;
+  mediaMid?: string;
+}
+
+/** 统一搜索结果（去重合并后）单条。 */
+export interface UnifiedSearchItem {
+  id: string;
+  title: string;
+  artist: string;
+  album: string;
+  coverUrl: string;
+  duration: number;
+  sources: UnifiedSourceInfo[];
+  bestSource: MusicProvider | null;
+}
+
+/** 统一搜索的整页响应。 */
+export interface UnifiedSearchResult {
+  q: string;
+  total: number;
+  page: number;
+  pageSize: number;
+  items: UnifiedSearchItem[];
+}
+
+/**
+ * 跨平台统一搜索。服务端同时查 QQ / 网易云 / Deezer，合并去重后分页返回。
+ * 单平台失败不阻塞其他平台——items 仍可能非空，errors 在 server log 里有。
+ *
+ * 取消支持：传入 AbortSignal 即可中断进行中的请求。debounce 重新触发时
+ * 把上一次的 controller abort() 掉，避免旧响应覆盖新结果。
+ */
+export async function searchUnified(
+  q: string,
+  page = 1,
+  pageSize = 20,
+  signal?: AbortSignal,
+): Promise<UnifiedSearchResult> {
+  const params = new URLSearchParams({
+    q,
+    page: String(page),
+    pageSize: String(pageSize),
+  });
+  return json<UnifiedSearchResult>(
+    await fetch(`${API_BASE}/music/search?${params.toString()}`, {
+      credentials: 'include',
+      signal,
+    }),
+  );
+}
+
+/**
+ * 把 UnifiedSearchItem 解析成可播放的 Track：按 bestSource（已有版权 + 优先级
+ * 最高）取对应的 source，把 platform-specific 的 id / audioUrl / mediaMid
+ * 拼回标准 Track 形状。bestSource 为 null 表示「所有平台都无版权」，返回
+ * null 让 UI 走灰色不可播放态。
+ */
+export function pickPlayableTrack(
+  item: UnifiedSearchItem,
+): Track | null {
+  if (!item.bestSource) return null;
+  const src = item.sources.find((s) => s.platform === item.bestSource);
+  if (!src) return null;
+  return {
+    id: src.trackId,
+    provider: src.platform,
+    title: item.title,
+    artist: item.artist,
+    album: item.album,
+    coverUrl: item.coverUrl,
+    audioUrl: src.url,
+    duration: item.duration,
+    liked: false,
+    mediaMid: src.mediaMid,
+  };
+}
+
 export interface DeezerEditorial {
   id: number;
   name: string;
@@ -180,6 +294,53 @@ export async function logout(provider: MusicProvider): Promise<void> {
   await fetch(`${API_BASE}/auth/logout?provider=${provider}`, {
     credentials: 'include',
   });
+}
+
+/** DeepSeek 推荐相关 API（v1：BYO key + 跑一次推荐）。 */
+export interface RecoStatus {
+  configured: boolean;
+  librarySize: number;
+}
+
+export interface RecoRequest {
+  count?: number;
+  language?: 'zh' | 'en' | 'ja' | 'auto' | string;
+  mood?: string;
+}
+
+export interface RecoRunResult {
+  items: UnifiedSearchItem[];
+  model: string;
+  runAt: number;
+  raw?: string; // 调试用，模型原始响应（截断）
+}
+
+export async function fetchRecoStatus(): Promise<RecoStatus> {
+  return json(
+    await fetch(`${API_BASE}/reco/status`, { credentials: 'include' }),
+  );
+}
+
+export async function runReco(req: RecoRequest = {}): Promise<RecoRunResult> {
+  return json(
+    await fetch(`${API_BASE}/reco/run`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    }),
+  );
+}
+
+export async function saveRecoKey(apiKey: string): Promise<{ ok: true; tail: string }> {
+  return json(
+    await fetch(`${API_BASE}/reco/key`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiKey }),
+    }),
+  );
 }
 
 /** 真·扫码登录第一步：拿二维码（key + dataURL 图片）。 */

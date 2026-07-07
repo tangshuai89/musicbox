@@ -3,12 +3,17 @@ import {
   fetchNextTrack,
   fetchDeezerEditorials,
   toggleLike,
+  fanOutLike,
   dislike,
   getAuthStatus,
   logout,
   loginQqCookie,
   loginNeteaseCookie,
   fetchLyrics,
+  pickPlayableTrack,
+  fetchRecoStatus,
+  runReco,
+  saveRecoKey,
   PROVIDER_LABELS,
   QQ_QUALITY_LABELS,
 } from './api';
@@ -20,12 +25,14 @@ import type {
   DeezerEditorial,
   QqQuality,
   LyricLine,
+  UnifiedSearchItem,
 } from './api';
 import SourceSelect from './SourceSelect';
 import NeteaseCookieModal from './NeteaseCookieModal';
 import SearchPanel from './SearchPanel';
 import ErrorPanel from './ErrorPanel';
 import LyricsPanel from './LyricsPanel';
+import RecoKeyModal from './RecoKeyModal';
 import './App.css';
 
 const PROVIDER_STORAGE_KEY = 'music-provider';
@@ -203,6 +210,10 @@ export default function App() {
   // Lyrics: fetched on track change, cleared on source switch.
   const [lyrics, setLyrics] = useState<LyricLine[] | null>(null);
   const [lyricsLoading, setLyricsLoading] = useState(false);
+  // DeepSeek 推荐：状态 + key 输入弹窗
+  const [recoStatus, setRecoStatus] = useState<{ configured: boolean; librarySize: number } | null>(null);
+  const [recoRunning, setRecoRunning] = useState(false);
+  const [recoKeyOpen, setRecoKeyOpen] = useState(false);
   const [qualityMenuOpen, setQualityMenuOpen] = useState(false);
   const QQ_QUALITY_KEY = 'musicbox:qq-quality';
   const [qqQuality, setQqQuality] = useState<QqQuality>(() => {
@@ -211,7 +222,20 @@ export default function App() {
   });
   // 搜索模式的客户端队列。非空时 loadNextTrack 在结果里前进，而不是走
   // 服务端电台。用 ref 存，避免 loadNextTrack 的闭包读到旧值。
-  const queueRef = useRef<{ tracks: Track[]; idx: number } | null>(null);
+  //
+  // 统一搜索（P0 之后）会给这个对象多带一个 unifiedItems 字段和 mergedId：
+  // - unifiedItems: 原始 UnifiedSearchItem[]，用来做 heart fan-out
+  // - mergedId: 当前播放这一首对应的 merged id（fan-out 入参）
+  // 单平台路径（电台 / 直连）这两个字段都没有，handleLike 走老路径。
+  const queueRef = useRef<{
+    tracks: Track[];
+    idx: number;
+    unifiedItems?: UnifiedSearchItem[];
+    mergedId?: string;
+  } | null>(null);
+  // 当前 track 是否被 fan-out 心动了（fannedOutTo.length > 0）。
+  // 用于 ❤ 图标高亮 + 后面显示"3❤"小角标。
+  const [fanOutCount, setFanOutCount] = useState<number>(0);
   // 切换音源时若当前有歌在放，标记跳过一次「provider 变化触发的自动加载」，
   // 让当前歌继续放到结束 / 用户点下一首，才从新音源取歌（不打断播放）。
   const skipAutoLoadRef = useRef(false);
@@ -378,6 +402,15 @@ export default function App() {
       .catch(() => setDeezerEditorials([]));
   }, []);
 
+  // Fetch reco status (DeepSeek key configured + library size) once on mount
+  // + 每次用户保存 key 之后（用 version 触发刷新）。
+  const [recoStatusVersion, setRecoStatusVersion] = useState(0);
+  useEffect(() => {
+    fetchRecoStatus()
+      .then(setRecoStatus)
+      .catch(() => setRecoStatus({ configured: false, librarySize: 0 }));
+  }, [recoStatusVersion]);
+
   // OAuth callback handler
   useEffect(() => {
     if (!provider) return;
@@ -542,13 +575,42 @@ export default function App() {
     }
   }, [provider, deezerPreset, presentTrack]);
 
-  /** 从搜索面板点某一行：整批结果作为队列，从 index 开始播。 */
+  /** 从搜索面板点某一行：把 UnifiedSearchItem[] 解析成可播放 Track[] 作为队列。
+   *  没有可播放 bestSource 的（所有平台都无版权）会从队列里剔除——SearchPanel
+   *  那一行已经置灰了，正常路径走不到；这里兜个底防止队列里出现"无主"项。
+   *
+   *  顺带把 unifiedItems + mergedId 存到 queueRef，handleLike 据此决定走
+   *  fanOutLike 路径。 */
   const handlePlaySearch = useCallback(
-    (results: Track[], index: number) => {
-      queueRef.current = { tracks: results, idx: index };
+    (unifiedItems: UnifiedSearchItem[], index: number) => {
+      const playable: { track: Track; srcIndex: number }[] = [];
+      unifiedItems.forEach((it, i) => {
+        const t = pickPlayableTrack(it);
+        if (t) playable.push({ track: t, srcIndex: i });
+      });
+      // 把被点的 index 在 unifiedItems 里的位置映射到 playable[] 的位置
+      const targetSrcIndex = unifiedItems[index] ? index : 0;
+      const startIdx = playable.findIndex(
+        (p) => p.srcIndex === targetSrcIndex,
+      );
+      if (startIdx < 0 || playable.length === 0) {
+        setError('没有可播放的音源');
+        return;
+      }
+      const target = unifiedItems[targetSrcIndex];
+      queueRef.current = {
+        tracks: playable.map((p) => p.track),
+        idx: startIdx,
+        unifiedItems,
+        mergedId: target?.id,
+      };
       setSearchOpen(false);
       setError(null);
-      presentTrack(results[index]);
+      // 切换搜索上下文时清掉旧的 fan-out 计数。新的 mergedId 对应的
+      // ❤ 状态得 server 那边查过才知道——本轮先重置为 0，TODO: 后续
+      // 拉一次 GET /music/like/merged 状态。
+      setFanOutCount(0);
+      presentTrack(playable[startIdx].track);
     },
     [presentTrack],
   );
@@ -812,9 +874,35 @@ export default function App() {
 
   const handleLike = async () => {
     if (!track || !provider) return;
+    // 统一搜索路径：fan-out 到所有 hasCopyright 的平台。
+    // 判定方式：当前 track 来自 unified queueRef（带 mergedId），
+    // 且 unifiedItems 里能找到它。SearchPanel 那一侧已经过滤掉
+    // bestSource=null 的，所以这里能 fan-out 的前提是至少一个 source
+    // 有版权。
+    const q = queueRef.current;
+    const current = q?.unifiedItems?.[q.idx];
+    if (q?.mergedId && current && current.bestSource) {
+      const nextLiked = !(fanOutCount > 0);
+      const sources = current.sources
+        .filter((s) => s.hasCopyright)
+        .map((s) => ({ platform: s.platform, trackId: s.trackId }));
+      try {
+        const result = await fanOutLike(q.mergedId, sources, nextLiked);
+        // 成功：更新 ❤ 角标数。fannedOutTo 现在是"当前 mergedId 心动过的
+        // 全部平台"（含之前单独心过的），不再是"本次 flip"——所以角标数
+        // 语义明确 = 这首歌在多少个平台上有 ❤。
+        setFanOutCount(nextLiked ? result.fannedOutTo.length : 0);
+        setTrack((prev) => (prev ? { ...prev, liked: nextLiked } : prev));
+      } catch (e) {
+        setError(`心动作业失败：${(e as Error).message}`);
+      }
+      return;
+    }
+    // 单平台路径：电台 / 现在的 now-playing，行为完全保留不变。
     const result = await toggleLike(provider, track.id);
     if (result.success) {
       setTrack((prev) => (prev ? { ...prev, liked: result.liked } : prev));
+      setFanOutCount(0);
     }
   };
 
@@ -908,6 +996,62 @@ export default function App() {
     await logout(provider);
     setAuth({ provider, loggedIn: false, user: null });
   };
+
+  /**
+   * 推荐按钮：先看 status，没 key 弹 key 输入；有了直接跑。
+   * 跑完把 UnifiedSearchItem[] 当搜索队列灌进 handlePlaySearch 那条路。
+   */
+  const handleReco = useCallback(async () => {
+    setError(null);
+    // 重新拉一次 status（防 stale）
+    let status = recoStatus;
+    try {
+      status = await fetchRecoStatus();
+      setRecoStatus(status);
+    } catch (e) {
+      setError(`推荐状态查询失败：${(e as Error).message}`);
+      return;
+    }
+    if (!status.configured) {
+      setRecoKeyOpen(true);
+      return;
+    }
+    if (status.librarySize === 0) {
+      setError('先 POST /music/library/import 导入你的"我的喜欢"再来推荐');
+      return;
+    }
+    setRecoRunning(true);
+    try {
+      const result = await runReco({ count: 10 });
+      if (result.items.length === 0) {
+        setError('推荐没拿到结果，换个心情/语言试试？');
+        return;
+      }
+      // 走搜索队列的同一条播放链路
+      handlePlaySearch(result.items, 0);
+    } catch (e) {
+      setError(`推荐失败：${(e as Error).message}`);
+    } finally {
+      setRecoRunning(false);
+    }
+  }, [recoStatus, handlePlaySearch]);
+
+  const handleSaveRecoKey = useCallback(async (key: string) => {
+    if (!key || key.length < 8) {
+      setError('key 太短');
+      return;
+    }
+    try {
+      const r = await saveRecoKey(key);
+      setRecoKeyOpen(false);
+      setRecoStatusVersion((v) => v + 1);
+      setError(null);
+      // 不把 tail 在 UI 上展示，避免提示"已设置"。用户可以从 status 推断。
+      void r; // 仅用于触发刷新
+    } catch (e) {
+      setError(`保存 key 失败：${(e as Error).message}`);
+    }
+  }, []);
 
   /**
    * Wipe all client-side state and bounce back to the source picker. Useful
@@ -1023,13 +1167,31 @@ export default function App() {
           </select>
         )}
 
-        {(provider === 'qq' || provider === 'netease') && auth.loggedIn && (
+        {provider && (
           <button
             className="titlebar-btn search-btn"
             onClick={() => setSearchOpen(true)}
-            title="搜索歌手 / 歌名"
+            title="搜索歌手 / 歌名（跨平台统一搜索）"
           >
             🔍 搜索
+          </button>
+        )}
+
+        {provider && (
+          <button
+            className="titlebar-btn reco-btn"
+            onClick={() => void handleReco()}
+            disabled={recoRunning}
+            title={
+              recoStatus?.configured
+                ? '基于你的统一库推荐新歌'
+                : '设置 DeepSeek API key 后基于你的统一库推荐新歌'
+            }
+          >
+            {recoRunning ? '…' : '🎲 推荐'}
+            {recoStatus && !recoStatus.configured && (
+              <span className="reco-key-dot" aria-hidden="true" />
+            )}
           </button>
         )}
 
@@ -1287,11 +1449,18 @@ export default function App() {
           className="control-btn like-btn"
           onClick={handleLike}
           disabled={!track}
-          title="红心"
+          title={
+            fanOutCount > 0
+              ? `已 fan-out 心动了 ${fanOutCount} 个平台`
+              : '红心'
+          }
         >
           <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
             <path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z" />
           </svg>
+          {fanOutCount > 1 && (
+            <span className="like-btn-badge">{fanOutCount}❤</span>
+          )}
         </button>
 
         <button
@@ -1349,11 +1518,17 @@ export default function App() {
         />
       )}
 
-      {searchOpen && (provider === 'qq' || provider === 'netease') && (
+      {searchOpen && provider && (
         <SearchPanel
-          provider={provider}
           onPlay={handlePlaySearch}
           onClose={() => setSearchOpen(false)}
+        />
+      )}
+
+      {recoKeyOpen && (
+        <RecoKeyModal
+          onSave={handleSaveRecoKey}
+          onClose={() => setRecoKeyOpen(false)}
         />
       )}
     </div>

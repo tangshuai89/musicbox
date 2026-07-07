@@ -16,6 +16,12 @@ export interface ProviderSession {
   // NetEase
   musicU?: string;
   csrfToken?: string;
+  // Spotify (OAuth PKCE)
+  spotify?: {
+    accessToken: string;
+    refreshToken: string;
+    expiresAt: number; // ms epoch
+  };
   // Profile (shared)
   nickname?: string;
   avatarUrl?: string;
