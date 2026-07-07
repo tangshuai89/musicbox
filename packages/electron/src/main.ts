@@ -5,10 +5,87 @@ import {
   ipcMain,
 } from 'electron';
 import * as path from 'path';
+import { spawn, ChildProcess } from 'node:child_process';
 
 const isDev = !app.isPackaged;
 
 let mainWindow: BrowserWindow | null = null;
+
+// ── NestJS sidecar（packaged 模式） ────────────────────────────────────────
+
+/** Sidecar 进程。dev 模式不启动（用户用 `npm run dev:server` 自己跑）。 */
+let sidecar: ChildProcess | null = null;
+
+/** Sidecar 端口，默认 3200；PORT env 可改。 */
+const SIDECAR_PORT = Number(process.env.PORT ?? 3200);
+
+/** 等端口就绪（轮询 :3200/music/deezer/editorials 之类的轻量 endpoint）。 */
+async function waitForSidecar(port: number, timeoutMs = 30_000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/music/deezer/editorials`);
+      if (res.ok) return;
+    } catch {
+      // not ready yet
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error(`sidecar not ready after ${timeoutMs}ms on :${port}`);
+}
+
+/** Spawn NestJS sidecar（packaged 模式）。 */
+function startSidecar(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (isDev) {
+      // dev 模式：用户自己跑 `npm run dev:server`，别在这里再起一个
+      resolve();
+      return;
+    }
+    const serverEntry = path.join(
+      process.resourcesPath,
+      'server',
+      'main.js',
+    );
+    console.log(`[main] spawning sidecar: ${serverEntry}`);
+    sidecar = spawn(process.execPath, [serverEntry], {
+      env: {
+        ...process.env,
+        // Electron 的 process.execPath 就是 node（在 packaged Electron 里
+        // 也是），所以可以直接 spawn 它跑 .js。Mac 上在某些版本可能需要
+        // ELECTRON_RUN_AS_NODE=1 才能当 node 用。
+        ELECTRON_RUN_AS_NODE: '1',
+        PORT: String(SIDECAR_PORT),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    sidecar.stdout?.on('data', (b) => process.stdout.write(`[sidecar] ${b}`));
+    sidecar.stderr?.on('data', (b) => process.stderr.write(`[sidecar-err] ${b}`));
+    sidecar.on('error', (err) => {
+      console.error('[main] sidecar spawn error:', err);
+      reject(err);
+    });
+    sidecar.on('exit', (code) => {
+      console.log(`[main] sidecar exited with code=${code}`);
+      sidecar = null;
+    });
+    waitForSidecar(SIDECAR_PORT)
+      .then(() => resolve())
+      .catch(reject);
+  });
+}
+
+/** 关闭 sidecar。app quit 时调。 */
+function stopSidecar(): void {
+  if (!sidecar) return;
+  console.log('[main] killing sidecar');
+  try {
+    sidecar.kill('SIGTERM');
+  } catch {
+    // ignore
+  }
+  sidecar = null;
+}
 
 /** The QQ Music login window (kept alive hidden after success so we could
  * proxy through its Chromium session later if QQ ever tightens anti-bot). */
@@ -62,6 +139,16 @@ function createWindow(): void {
   } else {
     const rendererPath = path.join(process.resourcesPath, 'renderer', 'index.html');
     mainWindow.loadFile(rendererPath);
+  }
+
+  // 一旦 renderer 加载完，把 sidecar URL 告诉它。renderer 用这个替换 hardcode
+  // 的 localhost:3200，确保 prod 模式下 fetch 走对地方。
+  if (!isDev) {
+    mainWindow.webContents.once('did-finish-load', () => {
+      mainWindow?.webContents.send('sidecar-ready', {
+        apiBase: `http://localhost:${SIDECAR_PORT}`,
+      });
+    });
   }
 
   mainWindow.once('ready-to-show', () => {
@@ -437,7 +524,16 @@ ipcMain.handle('netease:login', async () => {
 
 // ── App lifecycle ───────────────────────────────────────────────────────────
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // 1. 启动 sidecar（prod 模式才有），等它就绪
+  try {
+    await startSidecar();
+  } catch (err) {
+    console.error('[main] failed to start sidecar:', err);
+    // 不阻塞窗口打开——前端能展示一个错误面板，比黑屏好
+  }
+
+  // 2. 打开主窗口
   createWindow();
 
   app.on('activate', () => {
@@ -445,7 +541,12 @@ app.whenReady().then(() => {
   });
 });
 
+app.on('before-quit', () => {
+  stopSidecar();
+});
+
 app.on('window-all-closed', () => {
+  stopSidecar();
   if (process.platform !== 'darwin') {
     app.quit();
   }

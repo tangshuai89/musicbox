@@ -7,11 +7,19 @@
 // relative path would otherwise resolve against the wrong origin).
 //
 // `import.meta.env.DEV` is true only when Vite is running. In production
-// builds, we fall back to http://localhost:3200 — the user is expected
-// to have the NestJS server running on that port (Electron could be
-// configured to start it as a child process in a follow-up).
-const API_ORIGIN = import.meta.env.DEV ? '' : 'http://localhost:3200';
-const API_BASE = API_ORIGIN + '/api';
+// builds, we read the sidecar URL from window.electronAPI.apiBase
+// (set by the preload bridge after the main process spawns the NestJS
+// sidecar). If neither is set (running prod build without Electron),
+// we fall back to http://localhost:3200 and let the user deal with it.
+function resolveApiOrigin(): string {
+  // In Electron, prefer the sidecar URL that main process pushed via preload.
+  if (typeof window !== 'undefined' && (window as { electronAPI?: { apiBase?: string } }).electronAPI?.apiBase) {
+    return (window as { electronAPI: { apiBase: string } }).electronAPI.apiBase;
+  }
+  if (import.meta.env.DEV) return '';
+  return 'http://localhost:3200';
+}
+const API_BASE = resolveApiOrigin() + '/api';
 
 export type MusicProvider = 'qq' | 'netease' | 'deezer';
 
