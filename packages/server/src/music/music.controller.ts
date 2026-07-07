@@ -261,6 +261,15 @@ export class MusicController {
       if (provider === 'deezer') {
         upstream = await this.musicService.getStreamUrl(session, 'deezer', trackId);
         headers.Referer = 'https://www.deezer.com/';
+      } else if (provider === 'spotify') {
+        // Spotify 的 30s preview（p.scdn.co）对 Referer 不敏感，但也别乱塞
+        // 网易云的 Referer。quality/mediaMid 对 spotify 无意义，不传。
+        upstream = await this.musicService.getStreamUrl(
+          session,
+          'spotify',
+          decodeURIComponent(trackId),
+        );
+        headers.Referer = 'https://open.spotify.com/';
       } else {
         const quality = (['standard', 'high', 'lossless'] as const).includes(
           q as QqQuality,
@@ -363,6 +372,8 @@ export class MusicController {
     'p4.music.126.net',
     'e-cdns-images.dzcdn.net',          // Deezer
     'cdn-images.dzcdn.net',
+    'i.scdn.co',                        // Spotify（专辑封面 CDN）
+    'mosaic.scdn.co',                   // Spotify（歌单拼图封面）
   ]);
 
   @Get('cover-proxy')

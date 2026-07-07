@@ -1,11 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import {
-  searchUnified,
-  pickPlayableTrack,
-  PROVIDER_LABELS,
-} from './api';
+import { searchUnified, PROVIDER_LABELS } from './api';
 import type {
-  Track,
   UnifiedSearchItem,
   UnifiedSourceInfo,
   MusicProvider,
@@ -28,8 +23,6 @@ const DEBOUNCE_MS = 300;
 /** 搜索发起超过这个时间还没拿到结果，就显示"暂无结果"——避免慢响应时的
  *  "什么也没显示"白屏感。实际结果回来后会立即被真实数据覆盖。 */
 const EMPTY_TIMEOUT_MS = 3000;
-
-const SOURCE_PRIORITY: MusicProvider[] = ['qq', 'netease', 'deezer'];
 
 /**
  * 搜索面板——产品核心入口：输入歌手/歌名 → 跨 QQ/网易云/Deezer 同时搜 →
@@ -313,6 +306,8 @@ function providerShort(p: MusicProvider): string {
       return '网易';
     case 'deezer':
       return 'DZ';
+    case 'spotify':
+      return 'SP';
   }
 }
 

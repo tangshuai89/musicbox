@@ -62,6 +62,12 @@ export class MatchService {
    * null 候选——不影响其他平台。
    */
   async findEquivalent(seed: Track): Promise<MatchResult> {
+    // 只在能"无 session / catch 掉 session"搜索的平台里找等价：
+    //  - qq / deezer：匿名可搜
+    //  - netease：需登录，未登录 search 抛错被 catch → null
+    //  - spotify：需 OAuth token，而 findEquivalent 签名里没有 session，
+    //    拿不到 token，所以刻意不含 spotify（不是遗漏）。将来若要支持，
+    //    得给 findEquivalent 传 session。
     const otherProviders: MusicProvider[] = (
       ['qq', 'netease', 'deezer'] as MusicProvider[]
     ).filter((p) => p !== seed.provider);
@@ -135,8 +141,13 @@ export class MatchService {
               return null;
             }
           }
-          const tracks = await this.deezer.search({}, `${title} ${artist}`, 5);
-          return tracks[0] ?? null;
+          if (provider === 'deezer') {
+            const tracks = await this.deezer.search({}, `${title} ${artist}`, 5);
+            return tracks[0] ?? null;
+          }
+          // spotify 等需要 token 的平台：findEquivalent 无 session，无法搜。
+          // 显式返回 null，而不是隐式 fallthrough 到 deezer.search（旧 bug）。
+          return null;
         } catch (err) {
           this.logger.debug(
             `${provider} search failed: ${(err as Error).message}`,

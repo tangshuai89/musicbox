@@ -16,7 +16,7 @@ const DEEPSEEK_BASE = 'https://api.deepseek.com/v1';
 const DEEPSEEK_MODEL = 'deepseek-chat';
 /** 喂 prompt 的库歌曲上限——超过就截前 200 节省 token。 */
 const LIBRARY_PROMPT_LIMIT = 200;
-/** 推荐去重：本次推荐结果中，相邻 normalizeKey 视为同一首。 */
+/** DeepSeek chat 补全的硬超时——LLM 偶尔卡很久，25s 后 abort。 */
 const RECOMMEND_TIMEOUT_MS = 25_000;
 
 /** 用户填的 key 存哪。 */

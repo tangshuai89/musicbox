@@ -21,12 +21,13 @@ function resolveApiOrigin(): string {
 }
 const API_BASE = resolveApiOrigin() + '/api';
 
-export type MusicProvider = 'qq' | 'netease' | 'deezer';
+export type MusicProvider = 'qq' | 'netease' | 'deezer' | 'spotify';
 
 export const PROVIDER_LABELS: Record<MusicProvider, string> = {
   qq: 'QQ 音乐',
   netease: '网易云音乐',
   deezer: 'Deezer',
+  spotify: 'Spotify',
 };
 
 export interface Track {

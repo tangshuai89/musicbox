@@ -430,7 +430,7 @@ export class MusicService {
     provider: MusicProvider,
     keyword: string,
   ): Promise<ProviderSearchRaw> {
-    let tracks: import('./music.service').Track[];
+    let tracks: Track[];
     if (provider === 'qq') {
       tracks = await this.qq.search(session.providers.qq ?? {}, keyword, 30);
     } else if (provider === 'netease') {
@@ -451,7 +451,7 @@ export class MusicService {
     // 统一搜索结果里 sources[].url 要带可播放的代理路径——provider.search()
     // 返回的 track.audioUrl 可能是空（QQ/网易云 URL 短期过期，播放时由
     // getStreamUrl 重新拿），所以这里替换成后端代理的相对路径，前端拼 base
-    // 后直接当 <audio src> 用。Dealer 的 audioUrl 已是 http 完整 URL（30s
+    // 后直接当 <audio src> 用。Deezer 的 audioUrl 已是 http 完整 URL（30s
     // 预览），保留原值。
     tracks = tracks.map((t) => ({
       ...t,
