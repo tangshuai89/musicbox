@@ -470,6 +470,14 @@
   100% { transform: translateX(220%); }
 }
 
+/* While the search overlay is open, pause the sheen sweep. The overlay's
+   backdrop-filter re-samples the cover behind it; a moving sheen would
+   flicker through the blur on every scroll repaint. Paused → the cover
+   is fully static behind the overlay (the bass pulse is frozen in JS). */
+.app.search-open .cover-card::after {
+  animation-play-state: paused;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .cover-card::after {
     animation: none;

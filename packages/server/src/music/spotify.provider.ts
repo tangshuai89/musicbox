@@ -1,7 +1,11 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { Track } from './music.service';
 import { ProviderSession } from '../common/session';
-import { QqQuality } from './qq.provider';
+import { StorageService } from '../common/storage';
+
+/** storage key where AuthController persists the user's Spotify client_id.
+ *  Must stay in sync with auth.controller.ts SPOTIFY_CLIENT_ID_KEY. */
+const SPOTIFY_CLIENT_ID_KEY = 'secrets:spotify-client-id';
 
 /**
  * Spotify Web API adapter。
@@ -80,9 +84,24 @@ export class SpotifyMusicProvider {
    *  同时用于 lazy GC——startAuth 时清掉所有 >TTL 的 orphan。 */
   private static readonly PKCE_TTL_MS = 10 * 60_000;
 
-  constructor() {}
+  constructor(private readonly storage: StorageService) {}
 
   // ── 配置 / 鉴权基础 ─────────────────────────────────────
+
+  /**
+   * 解析 client_id：优先 process.env（当次会话 setSpotifyClientId 会写），
+   * 回退到持久化的 storage。⚠️ 之前只读 process.env，服务重启后 env 丢失
+   * → refresh/exchange 报 "SPOTIFY_CLIENT_ID 未设"，Spotify 静默掉线，直到
+   * 用户再手动设一次 client_id。读 storage 兜底后，重启即恢复。
+   */
+  private resolveClientId(): string | null {
+    const fromEnv = process.env.SPOTIFY_CLIENT_ID;
+    if (fromEnv) return fromEnv;
+    const stored = this.storage.get<{ clientId?: string }>(
+      SPOTIFY_CLIENT_ID_KEY,
+    );
+    return stored?.clientId ?? null;
+  }
 
   isConfigured(session: ProviderSession | undefined): boolean {
     return Boolean(this.readToken(session));
@@ -120,7 +139,7 @@ export class SpotifyMusicProvider {
     session: ProviderSession,
     refreshToken: string,
   ): Promise<string | null> {
-    const clientId = process.env.SPOTIFY_CLIENT_ID;
+    const clientId = this.resolveClientId();
     if (!clientId) {
       this.logger.warn('refreshAccessToken: SPOTIFY_CLIENT_ID 未设');
       return null;
@@ -220,7 +239,7 @@ export class SpotifyMusicProvider {
     if (Date.now() - flow.createdAt > SpotifyMusicProvider.PKCE_TTL_MS) {
       throw new BadRequestException('expired_state：请重新登录');
     }
-    const clientId = process.env.SPOTIFY_CLIENT_ID;
+    const clientId = this.resolveClientId();
     if (!clientId) {
       throw new BadRequestException('SPOTIFY_CLIENT_ID 未设');
     }

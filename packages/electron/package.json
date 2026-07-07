@@ -7,7 +7,8 @@
     "dev": "tsc && electron dist/main.js",
     "build": "tsc",
     "start": "electron dist/main.js",
-    "pack": "electron-builder --mac"
+    "pack": "electron-builder --mac",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "electron-is-dev": "^2.0.0"

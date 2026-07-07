@@ -210,21 +210,19 @@ export class DeezerMusicProvider {
   }
 
   /**
-   * Fetch lyrics for a Deezer track. Deezer exposes lyrics via the
-   * public API at `/track/{id}` — the response has either:
-   *   - `lyrics.data[*].text`  — unsynced plain text (one string per
-   *     line, no timestamps)
-   *   - `lyrics.data[*].syncText[*]` — synced LRC body (LRC format
-   *     with [mm:ss.xx] tags) when the rights-holder uploaded them.
-   *
-   * NetEase LRC parsing is reused for the synced format. If only
-   * unsynced text is available, we synthesise a LyricLine[] with a
-   * single placeholder entry so the renderer can still show
-   * something rather than the "no lyrics" state.
+   * Best-effort lyrics for a Deezer track. NOTE: Deezer's *public* API
+   * (`/track/{id}`) usually does NOT include a `lyrics` field — synced
+   * lyrics live behind an authenticated endpoint — so this most often
+   * returns null, and the UI shows "暂无歌词". We still parse the two
+   * shapes in case a token-bearing / regional response includes them:
+   *   - `lyrics.data[*].syncText` — synced LRC body ([mm:ss.xx] tags);
+   *     reuses NetEase's parseLrc.
+   *   - `lyrics.data[*].text`     — unsynced plain text; each verse
+   *     becomes its own untimed LyricLine.
    */
   async getLyrics(trackId: string): Promise<LyricLine[] | null> {
     try {
-      const res = await fetch(`https://api.deezer.com/track/${trackId}`);
+      const res = await fetch(`${DeezerMusicProvider.API}/track/${trackId}`);
       if (!res.ok) return null;
       const data = (await res.json()) as {
         lyrics?: {

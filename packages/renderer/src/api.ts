@@ -1,16 +1,23 @@
-// In dev (Vite on :5173) we proxy /api/* and /music/* to the NestJS
-// server on :3200 — see vite.config.ts. The HTML5 <audio> element,
-// however, loads `track.audioUrl` directly, which is a server-relative
-// path like `/music/stream/deezer/123`. We resolve it to an absolute
-// URL using the configured API origin so it works in both dev and
-// production (where Electron loads renderer from `file://` and the
-// relative path would otherwise resolve against the wrong origin).
+// The NestJS server exposes its routes WITHOUT any prefix: `/music/*`,
+// `/auth/*`, `/reco/*`. In dev (Vite on :5173) those paths are proxied
+// to the server on :3200 (see vite.config.ts). The HTML5 <audio>
+// element loads `track.audioUrl` directly — a server-relative path like
+// `/music/stream/deezer/123` — so we resolve every URL against the same
+// API origin, which works in both dev and production (where Electron
+// loads the renderer from `file://` and a bare relative path would
+// otherwise resolve against the wrong origin).
+//
+// ⚠️ There is deliberately NO `/api` prefix. The old code prefixed the
+// client with `/api` and relied on Vite's dev proxy to strip it — but
+// the server never had that prefix and prod has no such rewrite, so
+// packaged builds 404'd on every call. Client and server now agree on
+// the prefix-less shape (matching the audio path, which never used one).
 //
 // `import.meta.env.DEV` is true only when Vite is running. In production
-// builds, we read the sidecar URL from window.electronAPI.apiBase
-// (set by the preload bridge after the main process spawns the NestJS
-// sidecar). If neither is set (running prod build without Electron),
-// we fall back to http://localhost:3200 and let the user deal with it.
+// builds we read the sidecar URL from window.electronAPI.apiBase (pushed
+// by the preload bridge once main spawns the NestJS sidecar). If neither
+// is set (running a prod build without Electron), we fall back to
+// http://localhost:3200 and let the user deal with it.
 function resolveApiOrigin(): string {
   // In Electron, prefer the sidecar URL that main process pushed via preload.
   if (typeof window !== 'undefined' && (window as { electronAPI?: { apiBase?: string } }).electronAPI?.apiBase) {
@@ -19,7 +26,12 @@ function resolveApiOrigin(): string {
   if (import.meta.env.DEV) return '';
   return 'http://localhost:3200';
 }
-const API_BASE = resolveApiOrigin() + '/api';
+
+/** Resolved server origin (''  in dev, sidecar URL / localhost:3200 in
+ *  prod). Exported so the renderer can build media URLs (audio src,
+ *  cover-proxy) against the exact same origin the API client uses. */
+export const API_ORIGIN = resolveApiOrigin();
+const API_BASE = API_ORIGIN;
 
 export type MusicProvider = 'qq' | 'netease' | 'deezer' | 'spotify';
 
@@ -341,6 +353,41 @@ export async function saveRecoKey(apiKey: string): Promise<{ ok: true; tail: str
       body: JSON.stringify({ apiKey }),
     }),
   );
+}
+
+/** 单个平台的"我的喜欢"导入状态。count=0 且有 error 表示该平台没拉到。 */
+export interface LibrarySource {
+  provider: MusicProvider;
+  count: number;
+  error?: string;
+}
+
+export interface LibraryImportResult {
+  items: UnifiedSearchItem[];
+  sources: LibrarySource[];
+  importedAt: number;
+}
+
+/**
+ * 触发"我的喜欢"导入：后端从各平台拉取已 ❤ 列表，合并去重后落地，返回
+ * 合并结果 + 每个平台的导入状态。AI 推荐需要先有库，UI 在库为空时调它。
+ */
+export async function importLibrary(): Promise<LibraryImportResult> {
+  return json<LibraryImportResult>(
+    await fetch(`${API_BASE}/music/library/import`, {
+      method: 'POST',
+      credentials: 'include',
+    }),
+  );
+}
+
+/** 读最近一次导入的库；未导入过返回 null（后端 404）。 */
+export async function getLibrary(): Promise<LibraryImportResult | null> {
+  const res = await fetch(`${API_BASE}/music/library`, {
+    credentials: 'include',
+  });
+  if (res.status === 404) return null;
+  return json<LibraryImportResult>(res);
 }
 
 /** 真·扫码登录第一步：拿二维码（key + dataURL 图片）。 */

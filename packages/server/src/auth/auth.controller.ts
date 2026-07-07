@@ -170,9 +170,20 @@ export class AuthController {
     }
     const session = this.sessionService.resolve(req, res);
     const ps = session.providers[p];
+    // 各平台的"已登录"凭据不同：QQ→qqCookie，网易云→musicU，Spotify→spotify
+    // token。之前漏了 spotify，导致 /auth/status?provider=spotify 永远返回
+    // loggedIn:false（即便已 OAuth 登录）。按 provider 精确判断。
+    const loggedIn =
+      p === 'qq'
+        ? Boolean(ps?.qqCookie)
+        : p === 'netease'
+          ? Boolean(ps?.musicU)
+          : p === 'spotify'
+            ? Boolean(ps?.spotify?.accessToken)
+            : false;
     return {
       provider: p,
-      loggedIn: Boolean(ps?.qqCookie || ps?.musicU),
+      loggedIn,
       user: ps
         ? {
             nickname: ps.nickname ?? '',

@@ -40,26 +40,6 @@ interface RadioResponse {
   };
 }
 
-interface SongDetailResponse {
-  code: number;
-  data?: {
-    track_info?: {
-      id: number;
-      name: string;
-      mid: string;
-      album?: { name: string; mid: string };
-      singer?: { name: string; mid: string }[];
-    };
-  };
-  tracks?: Array<{
-    id: number;
-    name: string;
-    mid: string;
-    album?: { name: string; mid: string };
-    singer?: { name: string; mid: string }[];
-  }>;
-}
-
 interface MusicuVkeyResponse {
   code?: number;
   req_0?: {
@@ -251,34 +231,6 @@ export class QqMusicProvider {
   }
 
   // ── helpers ───────────────────────────────────────────────────────────────
-
-  private async fetchSongDetails(
-    session: ProviderSession,
-    songmids: string[],
-  ): Promise<Map<string, NonNullable<SongDetailResponse['tracks']>[number]>> {
-    if (songmids.length === 0) return new Map();
-    const url = new URL(
-      'https://c.y.qq.com/song/fcgi-bin/song_detail_v2.fcg',
-    );
-    url.searchParams.set('songmid', songmids.join(','));
-    url.searchParams.set('format', 'json');
-
-    const res = await fetch(url.toString(), {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
-        Referer: 'https://y.qq.com/',
-        Cookie: session.qqCookie ?? '',
-      },
-    });
-    const json = (await res.json()) as SongDetailResponse;
-    const map = new Map<
-      string,
-      NonNullable<SongDetailResponse['tracks']>[number]
-    >();
-    for (const t of json.tracks ?? []) map.set(t.mid, t);
-    return map;
-  }
 
   private async fetchVkey(
     session: ProviderSession,
