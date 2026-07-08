@@ -1,0 +1,55 @@
+// The <body> base: typography + the layered cover-driven background wash.
+// (Font files themselves are loaded via a <link> in index.html; here we
+// just apply the stacks from --font-*.)
+
+body {
+  font-family: var(--font-ui);
+  // Keep tnum (tabular numerals) for the timecode display so 0:00 digits
+  // don't jitter as they tick.
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  letter-spacing: 0;
+
+  // Layered wash: three soft radial gradients anchored to the corners + the
+  // centre, all reading from CSS custom properties so the whole window
+  // tracks the current track. The wash is what makes the glass cards look
+  // frosted — backdrop-filter needs colour/shape behind it to blur. The
+  // bottom layer is the base colour.
+  background:
+    radial-gradient(
+      ellipse 70% 55% at 12% 8%,
+      color-mix(in oklab, var(--cover-accent) 45%, transparent) 0%,
+      transparent 55%
+    ),
+    radial-gradient(
+      ellipse 55% 50% at 88% 92%,
+      color-mix(in oklab, var(--accent) 32%, transparent) 0%,
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 40% 35% at 50% 50%,
+      color-mix(in oklab, var(--cover-accent) 12%, transparent) 0%,
+      transparent 70%
+    ),
+    radial-gradient(
+      ellipse 100% 80% at 50% 50%,
+      transparent 35%,
+      rgba(0, 0, 0, 0.35) 100%
+    ),
+    var(--bg-base);
+  // NB: no `background-attachment: fixed`. The app never scrolls, so fixed
+  // gave zero benefit but forced the background into a viewport-sized
+  // composited layer that Chromium failed to repaint across the full height
+  // after a window resize, leaving the lower part painted white. Default
+  // (scroll) attachment paints as part of normal element paint, reliably.
+  color: var(--text-primary);
+
+  // Theme transitions — short so the change feels responsive, not laggy.
+  transition: background-color 0.3s ease, color 0.3s ease;
+
+  user-select: none;
+  // NB: drag is set on the titlebar only. Putting it on body would swallow
+  // clicks on every interactive control.
+}

@@ -1,0 +1,185 @@
+@use '../abstracts' as *;
+
+// Side column: the Now Playing info card + the synced Lyrics card, stacked.
+
+.side-column {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+  min-height: 0;
+}
+
+.side-card {
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+// Reusable pulse — used by .lyrics-loading for the "加载歌词…" shimmer.
+@keyframes placeholder-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+// ── Lyrics card ──
+.lyrics-card {
+  padding: 16px 18px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.lyrics-panel {
+  flex: 1 1 auto;
+  overflow: hidden;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+}
+
+.lyrics-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  // Contain paint & layout: this scroll container sits inside a
+  // backdrop-filter glass card. Without containment, every scroll repaint
+  // leaks into the backdrop chain and forces the compositor to re-blur,
+  // which can white-screen parts of the window (Chromium bug).
+  // contain:layout+paint isolates the scroll paint; will-change:transform
+  // promotes it to a GPU layer so the compositor never touches the backdrop.
+  contain: layout paint;
+  will-change: transform;
+  @include custom-scrollbar;
+  padding-right: 6px;
+}
+
+.lyrics-line {
+  display: block;
+  width: 100%;
+  padding: 6px 0;
+  text-align: left;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  border-radius: 4px;
+  padding-left: 6px;
+  transition:
+    color 0.2s ease,
+    transform 0.2s var(--ease-out),
+    padding-left 0.2s var(--ease-out);
+}
+
+.lyrics-line:hover {
+  color: var(--text-secondary);
+}
+
+.lyrics-line.is-active {
+  color: var(--text-primary);
+  font-weight: 500;
+  font-size: 13px;
+  transform: scale(1.02);
+  padding-left: 10px;
+  // Subtle left border accent on the active line, tinted to the cover colour.
+  border-left: 2px solid color-mix(in oklab, var(--cover-accent) 70%, var(--accent));
+}
+
+.lyrics-line:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+// No-lyrics / loading empty state. Shared between "暂无歌词" and "加载歌词…".
+.lyrics-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  gap: 6px;
+  color: var(--text-tertiary);
+}
+
+.lyrics-empty-glyph {
+  font-family: var(--font-display);
+  font-size: 40px;
+  opacity: 0.35;
+}
+
+.lyrics-empty-hint {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.lyrics-loading {
+  // subtle pulse so it's visually distinct from "no lyrics"
+  animation: placeholder-pulse 2s ease-in-out infinite;
+}
+
+.side-card-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.side-card-label::before {
+  content: '';
+  display: inline-block;
+  width: 3px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.now-playing-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 18px;
+}
+
+.now-playing-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.now-playing-cell-label {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.now-playing-cell-value {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  @include truncate;
+}
+
+.queue-card {
+  // placeholder for upcoming songs / lyrics — kept simple in v1
+}
+
+.queue-empty {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-style: italic;
+}

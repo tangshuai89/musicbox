@@ -1,0 +1,11 @@
+@use 'sass:map';
+@use 'variables' as *;
+
+// z('titlebar') → the z-index for that layer. Fails loudly at compile time
+// if the name is missing, so a typo can't silently produce z-index: null.
+@function z($name) {
+  @if not map.has-key($z-layers, $name) {
+    @error 'Unknown z-index layer: #{$name}';
+  }
+  @return map.get($z-layers, $name);
+}

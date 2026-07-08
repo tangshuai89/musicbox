@@ -1,0 +1,102 @@
+@use '../abstracts' as *;
+
+// Top window bar: drag region + source switch + provider controls + auth.
+
+.titlebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 0 96px; // 96px clears the macOS traffic-light area
+  -webkit-app-region: drag;
+  background: transparent;
+  z-index: z('titlebar');
+}
+
+.titlebar > * {
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-btn {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: var(--bg-overlay);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.titlebar-btn:hover {
+  background: var(--bg-overlay-strong);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.titlebar-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.preset-select {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-overlay);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 3px 10px;
+  cursor: pointer;
+  outline: none;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.preset-select:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+  background: var(--bg-overlay-strong);
+}
+
+.login-btn {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  // Push login to the right edge of the titlebar; everything before it
+  // clusters on the left.
+  margin-left: auto;
+}
+
+.login-btn:hover {
+  background: var(--accent-hover);
+  color: #fff;
+  border-color: var(--accent-hover);
+}
+
+// Logged-in equivalent of .login-btn — same push-to-right behaviour.
+.account-btn {
+  margin-left: auto;
+  max-width: 160px;
+  @include truncate;
+}
+
+.reset-btn {
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-tertiary);
+  padding: 2px 8px;
+}
+
+.reset-btn:hover {
+  color: var(--accent);
+  background: var(--bg-overlay-strong);
+  border-color: var(--border-strong);
+}

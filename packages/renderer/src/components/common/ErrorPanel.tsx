@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import './ErrorPanel.css';
 
 interface Props {
   message: string;
@@ -7,9 +6,8 @@ interface Props {
 }
 
 /**
- * 可展开的错误面板——始终显示一行摘要，点击展开完整文本（等宽字体、
- * 自动换行），带复制按钮与关闭按钮。调试 NetEase 扫码登录 / OAuth 这种
- * 长错误信息必备。
+ * 可展开的错误面板——始终显示一行摘要，点击展开完整文本（等宽字体、自动换行），
+ * 带复制按钮与关闭按钮。调试 NetEase 扫码登录 / OAuth 这种长错误信息必备。
  */
 export default function ErrorPanel({ message, onClose }: Props) {
   const [expanded, setExpanded] = useState(false);

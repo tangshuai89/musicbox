@@ -1,0 +1,51 @@
+// Element resets + structural document base. Everything here is unscoped
+// and applies globally.
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+// Opaque base on the root element. Insurance: if any composited layer above
+// (body gradient, .app, bg-layer) ever fails to paint a region, the fallback
+// shown is this dark base — never the white default canvas. Uses the theme's
+// --bg-base so it's correct in both light and dark.
+html {
+  background-color: var(--bg-base, #14161a);
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  background: none;
+  outline: none;
+  font-family: inherit;
+  color: inherit;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input,
+select {
+  font-family: inherit;
+}
+
+// Honour the user's reduced-motion preference.
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

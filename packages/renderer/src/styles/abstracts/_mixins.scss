@@ -1,0 +1,46 @@
+// ─────────────────────────────────────────────────────────────────
+// Reusable declaration blocks. Kept intentionally small — only patterns
+// that genuinely repeat across the app earn a mixin.
+// ─────────────────────────────────────────────────────────────────
+
+// Frosted glass. Emits both the standard and -webkit-prefixed properties
+// (Electron's Chromium still wants the prefix on some builds). This exact
+// pairing is repeated on every card, dropdown, and modal.
+@mixin backdrop-blur($blur, $saturate: 180%) {
+  backdrop-filter: blur($blur) saturate($saturate);
+  -webkit-backdrop-filter: blur($blur) saturate($saturate);
+}
+
+// Single-line text with an ellipsis. Used on every title/subtitle/cell.
+@mixin truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@mixin flex-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+// Thin, hover-revealed scrollbar for glass scroll containers (the lyrics
+// list). Firefox uses scrollbar-*; WebKit uses the pseudo-elements.
+@mixin custom-scrollbar($width: 4px) {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+
+  &::-webkit-scrollbar {
+    width: $width;
+  }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: color-mix(in oklab, var(--text-primary) 20%, transparent);
+    border-radius: $width;
+  }
+  &:hover::-webkit-scrollbar-thumb {
+    background: color-mix(in oklab, var(--text-primary) 35%, transparent);
+  }
+}

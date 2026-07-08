@@ -1,0 +1,58 @@
+// ─────────────────────────────────────────────────────────────────
+// Compile-time SCSS constants.
+//
+// These are values that never change at runtime — layering, breakpoints,
+// and the fixed-dark popover palette. Anything the app mutates at runtime
+// (cover colour, theme) stays a CSS custom property in base/_tokens.scss,
+// NOT here.
+// ─────────────────────────────────────────────────────────────────
+
+// z-index layering. One map, one source of truth — no more guessing which
+// magic number sits above which. Read via z('name') (see _functions.scss).
+$z-layers: (
+  'bg-layer':       -1,
+  'base':            0,
+  'sheen':           5,
+  'menu-backdrop':  55,
+  'menu':           56,
+  'search-overlay': 60,
+  'titlebar':      100,
+  'modal':        1000,
+);
+
+// The only breakpoint in the app: below this height the side column
+// collapses next to the cover (see components/_app-shell.scss).
+$bp-short: 520px;
+
+// Fixed-dark popover palette. The search / reco-key panels are deliberately
+// always dark — they float over a dimmed scrim regardless of the light/dark
+// theme, so their text must stay light. Centralised here instead of scattered
+// as magic hex through the partials. (The NetEase modal, by contrast, is
+// theme-aware and uses the CSS tokens.)
+$scrim:                    rgba(0, 0, 0, 0.45);
+$overlay-bg:               rgba(24, 24, 28, 0.96);
+$overlay-border:           rgba(255, 255, 255, 0.08);
+$overlay-divider:          rgba(255, 255, 255, 0.06);
+$overlay-hover:            rgba(255, 255, 255, 0.06);
+$overlay-field-bg:         rgba(255, 255, 255, 0.04);
+$overlay-field-border:     rgba(255, 255, 255, 0.12);
+$overlay-field-border-hi:  rgba(255, 255, 255, 0.3);
+$overlay-text:             #f2f2f5;
+$overlay-text-dim:         #9a9aa2;
+$overlay-text-mute:        #888;
+$overlay-text-faint:       #777;
+$overlay-icon:             #aaa;
+$overlay-error:            #ff8080;
+$overlay-ph-solid:         #333;
+$overlay-ph-a:             #3a3a42;
+$overlay-ph-b:             #24242a;
+$accent-green:             #31c27c; // search spinner / play icon / links
+
+// Search "source chip" per-platform accent, used by an @each in
+// components/_search-panel.scss to generate the .source-chip--best.*
+// rules instead of hand-writing one block per platform.
+$platform-colors: (
+  'qq':      (bg: rgba(49, 194, 124, 0.18), fg: #31c27c),
+  'netease': (bg: rgba(217, 68, 68, 0.18),  fg: #ff7b7b),
+  'deezer':  (bg: rgba(108, 75, 195, 0.22), fg: #b39dff),
+);

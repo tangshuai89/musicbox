@@ -1,0 +1,100 @@
+// ─────────────────────────────────────────────────────────────────
+// Theme token overrides. Two complete sets, selected by [data-theme=…] on
+// <html> (written by the theme hook) or by prefers-color-scheme when the
+// user leaves it on 'system'. Each theme has both an @media (auto) and a
+// [data-theme] (explicit) block so the toggle can override the OS.
+// ─────────────────────────────────────────────────────────────────
+
+// Dark tokens — shared by the @media and [data-theme='dark'] blocks below.
+@mixin dark-tokens {
+  // Cool blue-black — never pure black. The cover-extended bg tints the
+  // window; the neutral base stays cool so the whole thing reads "tech".
+  --bg-base: #14161a;
+  --bg-primary: #14161a;
+  --bg-secondary: #1c1f26;
+  --bg-elevated: rgba(40, 44, 54, 0.55);
+  --bg-overlay: rgba(230, 238, 255, 0.06);
+  --bg-overlay-strong: rgba(230, 238, 255, 0.12);
+
+  --text-primary: #eef1f7;
+  --text-secondary: rgba(238, 241, 247, 0.66);
+  --text-tertiary: rgba(238, 241, 247, 0.34);
+
+  --border: rgba(230, 238, 255, 0.1);
+  --border-strong: rgba(230, 238, 255, 0.18);
+  --shadow: rgba(8, 10, 16, 0.6);
+
+  --heart-active: #ff5470;
+  --heart-inactive: rgba(238, 241, 247, 0.5);
+
+  --shadow-sm: 0 1px 2px rgba(8, 10, 16, 0.5);
+  --shadow-md: 0 4px 16px rgba(8, 10, 16, 0.55);
+  --shadow-lg: 0 18px 48px rgba(8, 10, 16, 0.7), 0 6px 16px rgba(8, 10, 16, 0.55);
+
+  --glass-bg: rgba(40, 44, 54, 0.5);
+  --glass-blur: saturate(180%) blur(40px);
+  --glass-border: 1px solid rgba(230, 238, 255, 0.1);
+
+  --error-fg: #ff8a8a;
+  --error-fg-soft: rgba(255, 138, 138, 0.7);
+  --error-bg: rgba(255, 138, 138, 0.08);
+  --error-border: rgba(255, 138, 138, 0.25);
+  --error-action-bg: rgba(255, 138, 138, 0.12);
+}
+
+// Light tokens — shared by the @media and [data-theme='light'] blocks.
+// NB: the two light blocks differ by one value in the original CSS
+// (--heart-active is #ef4444 via @media, #ff2d55 via [data-theme]); that
+// difference is preserved by overriding it in the explicit block below.
+@mixin light-tokens {
+  --bg-base: #fafaf9;
+  --bg-primary: #fafaf9;
+  --bg-secondary: #f5f5f4;
+  --bg-elevated: rgba(255, 255, 255, 0.72);
+  --bg-overlay: rgba(0, 0, 0, 0.04);
+  --bg-overlay-strong: rgba(0, 0, 0, 0.08);
+
+  --text-primary: #1c1917;
+  --text-secondary: rgba(28, 25, 23, 0.6);
+  --text-tertiary: rgba(28, 25, 23, 0.35);
+
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.16);
+  --shadow: rgba(0, 0, 0, 0.06);
+
+  --heart-active: #ef4444;
+  --heart-inactive: rgba(28, 25, 23, 0.4);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.08);
+
+  --glass-bg: rgba(255, 255, 255, 0.55);
+  --glass-blur: saturate(180%) blur(40px);
+  --glass-border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+// Dark (default on macOS) — Glass Cosmic.
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    @include dark-tokens;
+  }
+}
+
+[data-theme='dark'] {
+  @include dark-tokens;
+}
+
+// Light theme (overrides).
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    @include light-tokens;
+  }
+}
+
+[data-theme='light'] {
+  @include light-tokens;
+  // Preserve the original explicit-light heart colour, which differed from
+  // the auto-light one.
+  --heart-active: #ff2d55;
+}

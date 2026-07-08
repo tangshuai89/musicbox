@@ -1,3 +1,7 @@
+@use '../abstracts' as *;
+
+// First-run screen: pick a music source. Full-window centred card list.
+
 .source-select {
   position: relative;
   display: flex;
@@ -23,7 +27,7 @@
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
   border-bottom: 1px solid var(--glass-border);
-  z-index: 100;
+  z-index: z('titlebar');
 }
 
 .source-heading {
@@ -36,11 +40,7 @@
   color: var(--text-primary);
   letter-spacing: -0.02em;
   margin-bottom: 6px;
-  background: linear-gradient(
-    135deg,
-    var(--text-primary) 0%,
-    var(--accent) 100%
-  );
+  background: linear-gradient(135deg, var(--text-primary) 0%, var(--accent) 100%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -72,24 +72,22 @@
   backdrop-filter: var(--glass-blur);
   border: 1px solid var(--glass-border);
   box-shadow: var(--shadow-md);
-  transition: transform 0.25s var(--ease-spring), box-shadow 0.25s ease,
-    border-color 0.25s ease, background 0.25s ease;
+  transition:
+    transform 0.25s var(--ease-spring),
+    box-shadow 0.25s ease,
+    border-color 0.25s ease,
+    background 0.25s ease;
   text-align: left;
   position: relative;
   overflow: hidden;
 }
 
 .source-card::after {
-  /* Subtle gradient sweep that lights up on hover, suggesting the
-   * source is "alive". */
+  // Subtle gradient sweep that lights up on hover.
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(
-    135deg,
-    transparent 0%,
-    var(--accent-soft) 100%
-  );
+  background: linear-gradient(135deg, transparent 0%, var(--accent-soft) 100%);
   opacity: 0;
   transition: opacity 0.25s ease;
   pointer-events: none;

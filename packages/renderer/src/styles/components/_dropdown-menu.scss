@@ -1,0 +1,97 @@
+@use '../abstracts' as *;
+
+// Shared dropdown used by both the source switch and the quality switch in
+// the titlebar. The wrapper anchors the absolutely-positioned menu to its
+// trigger button; a fixed transparent backdrop catches outside clicks.
+
+.source-switch {
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.source-switch-icon {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+// The wrapper sits in the titlebar's normal flex flow. The menu uses
+// position:absolute relative to this wrap. We DO NOT use position:fixed —
+// that takes the wrap out of flex flow and makes sibling buttons overlap.
+.source-switch-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.source-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: z('menu-backdrop');
+}
+
+.source-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: z('menu');
+  min-width: 158px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg-overlay-strong);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  @include backdrop-blur(40px);
+}
+
+.source-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.source-menu-item:hover:not(.source-menu-item--disabled) {
+  background: var(--bg-overlay);
+  color: var(--text-primary);
+}
+
+.source-menu-item--active {
+  color: var(--text-primary);
+}
+
+.source-menu-item--disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.source-menu-check {
+  width: 12px;
+  color: var(--accent);
+}
+
+.source-menu-label {
+  flex: 1;
+}
+
+// Quality dropdown lives in the titlebar; anchor its menu to the button.
+.quality-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+// Right-aligned menu variant (so it doesn't overflow the window edge).
+.source-menu--right {
+  left: auto;
+  right: 0;
+}

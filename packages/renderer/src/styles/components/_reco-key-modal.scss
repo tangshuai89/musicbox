@@ -1,0 +1,103 @@
+@use '../abstracts' as *;
+
+// DeepSeek key dialog. Rendered inside the shared .modal-panel (see
+// _modal.scss), so this only styles the inner header / body / form. Uses the
+// same always-dark $overlay-* palette as the search panel for consistency.
+
+.reco-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid $overlay-divider;
+}
+
+.reco-modal-title {
+  flex: 1;
+  font-size: 14px;
+  color: $overlay-text;
+}
+
+.reco-modal-close {
+  width: 32px;
+  height: 36px;
+  border: none;
+  background: transparent;
+  color: $overlay-icon;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.reco-modal-close:hover {
+  color: #fff;
+}
+
+.reco-modal-body {
+  padding: 16px 14px;
+}
+
+.reco-modal-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: $overlay-text-dim;
+}
+
+.reco-modal-link {
+  color: $accent-green;
+}
+
+.reco-modal-input {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid $overlay-field-border;
+  background: $overlay-field-bg;
+  color: $overlay-text;
+  font-size: 14px;
+  outline: none;
+}
+
+.reco-modal-input:focus {
+  border-color: $overlay-field-border-hi;
+}
+
+.reco-modal-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.reco-modal-save {
+  height: 34px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 10px;
+  background: $accent-green;
+  color: #06231a;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.reco-modal-save:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.reco-modal-cancel {
+  height: 34px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: $overlay-text-dim;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.reco-modal-cancel:hover {
+  color: $overlay-text;
+}

@@ -1,0 +1,88 @@
+@use '../abstracts' as *;
+
+// Volume group: mute toggle + slim custom range slider, sitting at the right
+// end of the progress row's bottom line.
+
+.volume-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.volume-btn {
+  @include flex-center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.volume-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-overlay);
+}
+
+.volume-btn.is-muted {
+  color: var(--text-tertiary);
+}
+
+// Slim custom range slider. The fill portion (left of thumb) is driven by
+// the --volume custom property (0–100), set on the element by
+// <VolumeControl>. Track height is deliberately thin so the slider reads as
+// a horizontal accent next to the time codes.
+.volume-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 90px;
+  height: 3px;
+  border-radius: 999px;
+  outline: none;
+  cursor: pointer;
+  background: linear-gradient(
+    to right,
+    var(--accent-live) calc(var(--volume, 0) * 1%),
+    color-mix(in oklab, var(--text-primary) 18%, transparent) calc(var(--volume, 0) * 1%)
+  );
+}
+
+.volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  cursor: pointer;
+  box-shadow: 0 0 0 0 transparent;
+  transition: transform 0.12s var(--ease-spring), box-shadow 0.15s ease;
+}
+
+.volume-slider:hover::-webkit-slider-thumb {
+  transform: scale(1.25);
+  box-shadow: 0 0 0 4px color-mix(in oklab, var(--accent-live) 25%, transparent);
+}
+
+.volume-slider::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  cursor: pointer;
+  border: none;
+  transition: transform 0.12s var(--ease-spring);
+}
+
+.volume-slider:hover::-moz-range-thumb {
+  transform: scale(1.25);
+}
+
+.volume-btn:focus-visible,
+.volume-slider:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

@@ -1,0 +1,84 @@
+@use '../abstracts' as *;
+
+// Full-width progress row: thin bar with a hover-grown thumb dot, plus the
+// time codes (left) and volume group (right) sharing the row below it.
+
+.progress-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 4px;
+}
+
+.progress-bar {
+  position: relative;
+  width: 100%;
+  height: 5px;
+  background: color-mix(in oklab, var(--border) 80%, transparent);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: height 0.15s var(--ease-out);
+}
+
+.progress-bar:hover {
+  height: 7px;
+}
+
+.progress-fill {
+  height: 100%;
+  // Width is fed at runtime via the --progress custom property (0–100),
+  // set on the element by <ProgressBar>. Keeping the value in a CSS var
+  // (rather than an inline width rule) keeps the styling rule here in SCSS.
+  width: calc(var(--progress, 0) * 1%);
+  // Cover-driven fill: darker end is the raw cover colour, bright end is the
+  // lifted-toward-white version, giving a subtle sheen along the played
+  // portion. No brand orange — a B&W cover reads as light grey.
+  background: linear-gradient(90deg, var(--cover-accent) 0%, var(--accent-live) 100%);
+  border-radius: 999px;
+  position: relative;
+  box-shadow: 0 0 8px color-mix(in oklab, var(--accent-live) 50%, transparent);
+  transition: width 0.18s linear;
+}
+
+.progress-fill::after {
+  // thumb dot that grows on hover
+  content: '';
+  position: absolute;
+  right: -6px;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  transform: translateY(-50%) scale(0);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  transition: transform 0.15s var(--ease-spring);
+}
+
+.progress-bar:hover .progress-fill::after {
+  transform: translateY(-50%) scale(1);
+}
+
+.progress-time {
+  // flex:1 so this fills the row width left of the volume group; without it
+  // the box shrinks to content and space-between collapses.
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+// Bottom of the progress row: time codes left, volume group right, on the
+// same horizontal axis so the eye reads them as one balanced row.
+.progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}

@@ -1,0 +1,6 @@
+// Barrel for the abstracts layer. A partial does `@use '../abstracts' as *;`
+// to pull in every variable, function, and mixin in one line. Forwarding
+// (not re-emitting) means this produces zero CSS.
+@forward 'variables';
+@forward 'functions';
+@forward 'mixins';

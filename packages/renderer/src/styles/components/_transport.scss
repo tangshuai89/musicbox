@@ -1,0 +1,123 @@
+@use '../abstracts' as *;
+
+// Bottom transport row: dislike / like / play / skip.
+
+.transport-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 2px 8px 0;
+}
+
+.control-btn {
+  @include flex-center;
+  color: var(--text-secondary);
+  transition:
+    color 0.2s ease,
+    transform 0.2s var(--ease-spring),
+    background 0.2s ease;
+  padding: 6px;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  position: relative;
+}
+
+.control-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-overlay);
+  transform: scale(1.08);
+}
+
+.control-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.play-btn {
+  width: 46px;
+  height: 46px;
+  background: var(--text-primary);
+  color: var(--bg-primary) !important;
+  border-radius: 50%;
+  box-shadow:
+    0 6px 20px rgba(0, 0, 0, 0.4),
+    0 0 0 5px color-mix(in oklab, var(--cover-accent) 18%, transparent);
+  transition: transform 0.2s var(--ease-spring), box-shadow 0.4s ease;
+}
+
+.play-btn:hover:not(:disabled) {
+  background: var(--text-primary);
+  color: var(--bg-primary) !important;
+  transform: scale(1.08);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.5),
+    0 0 0 8px color-mix(in oklab, var(--cover-accent) 28%, transparent);
+}
+
+// 推荐按钮 + 未配 key 的小红点提示。复用 .titlebar-btn 基础样式。
+.reco-btn {
+  position: relative;
+}
+
+.reco-key-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ff7b7b;
+  box-shadow: 0 0 0 2px rgba(24, 24, 28, 0.96);
+  pointer-events: none;
+}
+
+.like-btn.liked {
+  color: var(--heart-active);
+}
+
+.like-btn.liked:hover {
+  color: var(--heart-active);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+// Heart fan-out 角标：显示这一首被心动了多少个平台（>1 才显示）。绝对定位到
+// ❤ 按钮右上角，背景用品牌色制造"小红点"感。
+.like-btn-badge {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--heart-active, #ef4444);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  box-shadow: 0 0 0 2px rgba(24, 24, 28, 0.96);
+  pointer-events: none;
+}
+
+.dislike-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-overlay);
+}
+
+// Spinner (loading state on play button).
+.spinner {
+  animation: rotate 1s linear infinite;
+}
+
+@keyframes rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}

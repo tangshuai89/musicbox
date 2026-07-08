@@ -3,6 +3,13 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
+  css: {
+    preprocessorOptions: {
+      // Use Dart Sass's modern compiler API (the legacy one is deprecated
+      // and prints a warning on every build).
+      scss: { api: 'modern-compiler' },
+    },
+  },
   server: {
     port: 5173,
     proxy: {

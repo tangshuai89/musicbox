@@ -1,0 +1,32 @@
+// ─────────────────────────────────────────────────────────────────
+// Single stylesheet entry for the renderer. Imported once, in main.tsx.
+// Components reference semantic class-name strings; none of them import
+// styles directly, so tsx stays fully decoupled from CSS.
+//
+// Order matters for the cascade: base (tokens → themes → reset → body)
+// first, then components. The abstracts layer (variables / functions /
+// mixins) is pulled in by each partial via `@use '../abstracts'` and emits
+// no CSS of its own.
+// ─────────────────────────────────────────────────────────────────
+
+// Base
+@use 'base/tokens';
+@use 'base/themes';
+@use 'base/reset';
+@use 'base/base';
+
+// Components
+@use 'components/app-shell';
+@use 'components/titlebar';
+@use 'components/dropdown-menu';
+@use 'components/cover-card';
+@use 'components/side-cards';
+@use 'components/progress';
+@use 'components/volume';
+@use 'components/transport';
+@use 'components/modal';
+@use 'components/search-panel';
+@use 'components/reco-key-modal';
+@use 'components/source-select';
+@use 'components/error-panel';
+@use 'components/netease-modal';

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AuthUser } from './api';
-import { checkNeteaseQr, loginNeteaseCookie, startNeteaseQr } from './api';
-import './NeteaseCookieModal.css';
+import type { AuthUser } from '../../api';
+import { checkNeteaseQr, loginNeteaseCookie, startNeteaseQr } from '../../api';
 
 interface Props {
   onSuccess: (user: AuthUser) => void;
@@ -30,11 +29,9 @@ export default function NeteaseCookieModal({ onSuccess, onClose }: Props) {
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stoppedRef = useRef(false);
-  // Keep the latest onSuccess in a ref so beginQrFlow doesn't depend on it.
-  // onSuccess is a new function on every parent render; if it were a dep, the
-  // mount effect would re-run each render, fetch a fresh unikey, and swap the
-  // QR image — the code "flashed" constantly and the phone could never finish
-  // scanning. With the ref, the QR is generated once and stays stable.
+  // Keep the latest onSuccess in a ref so beginQrFlow doesn't depend on it —
+  // otherwise the mount effect would re-run each render, fetch a fresh unikey,
+  // and swap the QR image (the code "flashed" constantly).
   const onSuccessRef = useRef(onSuccess);
   onSuccessRef.current = onSuccess;
 

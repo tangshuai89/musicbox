@@ -1,0 +1,133 @@
+@use '../abstracts' as *;
+
+// ─────────────────────────────────────────────────────────────────
+// App shell: the root layout column, the film-grain + cover-wash backing
+// layers, the Bento grid + its "tray" backing plate, and the shared
+// glass-card surface used by the side cards.
+// ─────────────────────────────────────────────────────────────────
+
+.app {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  height: 100vh;
+  padding: 56px 24px 24px; // 56px clears the 40px titlebar + breathing
+  gap: 16px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  overflow: hidden;
+  // Create a local stacking context so z-index children (bg-layer, film
+  // grain) are contained inside .app rather than participating in the root
+  // stacking context. Without this, z-index: 0 absolute children render ON
+  // TOP of the normal-flow app-grid, and glass cards' backdrop-filter has
+  // nothing to blur.
+  z-index: z('base');
+}
+
+// Film grain overlay — pure-CSS cinematic grain. A single inline SVG
+// (feTurbulence + feColorMatrix) tiles across the window and is composited
+// with mix-blend-mode: overlay, which brightens highlights and deepens
+// shadows. Opacity is low (~6%) so it adds texture without looking dirty.
+.app::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.65 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.85'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  opacity: 0.06;
+  mix-blend-mode: overlay;
+  z-index: z('base');
+}
+
+// Full-window blurred cover wash. Gives the glass cards a rich backdrop to
+// blur. background-image is set via JS on .bg-layer so it tracks the track.
+.bg-layer {
+  position: absolute;
+  inset: 0;
+  z-index: z('bg-layer');
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  opacity: 0.32;
+  pointer-events: none;
+  transition: opacity 1.2s ease;
+}
+
+// Bento grid: cover card (big, left) | side column (now-playing + lyrics).
+.app-grid {
+  display: grid;
+  // Cover dominates — 1.6 : 1 means the cover gets ~62% of the row width.
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 14px;
+  flex: 1 1 auto;
+  min-height: 0;
+  // Own stacking context so the ::before backing plate stays contained here
+  // — behind the cards but above the window bg-layer.
+  position: relative;
+  z-index: z('base');
+}
+
+// Backing plate ("tray"): a dim glass panel behind all the cards, inset
+// slightly beyond the grid so the cards read as floating ON it (visionOS
+// depth cue). Deliberately NO backdrop-filter here — nesting a second
+// blurred layer under the cards' own backdrop-filter is fragile in Chromium.
+.app-grid::before {
+  content: '';
+  position: absolute;
+  inset: -10px;
+  z-index: z('bg-layer');
+  border-radius: calc(var(--radius-xl) + 6px);
+  background: color-mix(in oklab, var(--bg-base) 62%, transparent);
+  border: 1px solid color-mix(in oklab, var(--text-primary) 5%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, var(--text-primary) 6%, transparent),
+    inset 0 0 40px color-mix(in oklab, #000 18%, transparent);
+  pointer-events: none;
+}
+
+// Glass card base — BACKGROUND tier. The side-column cards use this: a touch
+// more transparent and a lighter blur than the hero, so they sit visually
+// behind the cover card even though they're coplanar.
+.glass-card {
+  position: relative;
+  background: color-mix(
+    in oklab,
+    var(--cover-accent) 6%,
+    rgba(255, 255, 255, 0.045)
+  );
+  border: 1px solid color-mix(in oklab, var(--cover-accent) 14%, var(--border));
+  border-radius: var(--radius-xl);
+  @include backdrop-blur(30px, 160%);
+  box-shadow:
+    var(--shadow-md),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+  transition:
+    transform 0.4s var(--ease-out),
+    box-shadow 0.4s var(--ease-out),
+    background 0.8s ease,
+    border-color 0.4s ease;
+}
+
+.glass-card:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    var(--shadow-lg),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.14);
+}
+
+// Responsive: collapse side column on narrow heights.
+@media (max-height: $bp-short) {
+  .app-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .cover-card {
+    padding: 16px;
+    gap: 12px;
+  }
+}

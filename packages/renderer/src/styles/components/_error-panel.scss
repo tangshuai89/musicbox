@@ -1,3 +1,8 @@
+@use '../abstracts' as *;
+
+// Collapsible error panel — a one-line summary that expands to the full text
+// with copy/close actions. Sits inside the cover-meta area.
+
 .error-panel {
   margin-top: var(--space-2);
   width: 100%;
@@ -7,9 +12,7 @@
   border-radius: var(--radius-md);
   overflow: hidden;
   text-align: left;
-  /* Glass tint so it harmonises with the rest of the UI. */
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  @include backdrop-blur(20px, 100%);
 }
 
 .error-summary {
@@ -37,9 +40,7 @@
 
 .error-summary-text {
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  @include truncate;
 }
 
 .error-toggle {

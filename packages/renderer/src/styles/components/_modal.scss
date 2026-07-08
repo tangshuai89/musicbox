@@ -1,0 +1,31 @@
+@use '../abstracts' as *;
+
+// Shared modal shell used by the search + reco-key dialogs (see the Modal
+// component). Frosted-dark and theme-independent — it floats over a dimmed,
+// blurred scrim regardless of the light/dark theme, so it draws from the
+// fixed $overlay-* palette. (The NetEase modal is theme-aware and keeps its
+// own bespoke shell in _netease-modal.scss.)
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: z('search-overlay');
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 64px;
+  background: $scrim;
+  backdrop-filter: blur(6px);
+}
+
+.modal-panel {
+  width: min(92vw, 540px);
+  max-height: 78vh;
+  display: flex;
+  flex-direction: column;
+  background: $overlay-bg;
+  border: 1px solid $overlay-border;
+  border-radius: 16px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}

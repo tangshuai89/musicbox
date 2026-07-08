@@ -1,0 +1,92 @@
+// ─────────────────────────────────────────────────────────────────
+// Runtime design tokens — CSS custom properties on :root.
+//
+// These are CSS variables (not SCSS ones) on purpose: several are written
+// at runtime by JS (--cover-accent / --cover-glow / --bass-intensity as a
+// track plays) or flipped by the theme blocks in _themes.scss. SCSS
+// constants that never change live in abstracts/_variables.scss instead.
+// ─────────────────────────────────────────────────────────────────
+
+:root {
+  // Fallback: when no media query matches, lean dark — it matches the
+  // backgroundColor we already set in main.ts so the window never
+  // flashes white at startup.
+  color-scheme: light dark;
+
+  // Brand accent — cool iOS blue-violet (visionOS accent). Used for the
+  // login button, focus rings, section-label ticks — UI chrome where a
+  // stable brand identity matters more than matching the artwork.
+  --accent: #6b8cff;
+  --accent-soft: rgba(107, 140, 255, 0.18);
+  --accent-hover: #5678ee;
+  --accent-deep: #3f5bd0;
+  --accent-bright: #8aa4ff;
+
+  // Cosmic gradient stops — the deep-space wash behind the cover-extended
+  // bg, and the fallback before the cover colour loads.
+  --cosmic-near: #f5f0e8;
+  --cosmic-far: #fafaf9;
+
+  // Error colours (tokenised so dark mode works)
+  --error-fg: #c62828;
+  --error-fg-soft: rgba(198, 40, 40, 0.7);
+  --error-bg: rgba(198, 40, 40, 0.06);
+  --error-border: rgba(198, 40, 40, 0.18);
+  --error-action-bg: rgba(198, 40, 40, 0.08);
+
+  // Spacing scale
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  // Radius scale
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+  --radius-full: 9999px;
+
+  // Easing — a spring for buttons, a soft ease for fades
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  // Cover art main colour, extracted at runtime from the current cover
+  // image. Default fallback so the bg-layer has a colour before the first
+  // image loads. Cool slate-grey so the pre-load state reads neutral/tech.
+  --cover-accent: #8a93a8;
+
+  // Live playback accent — the cover colour lifted toward white so it stays
+  // legible on the dark glass regardless of how dark or desaturated the
+  // cover is. This is what the progress bar and volume slider use, so a
+  // B&W cover yields a clean light-grey bar and a colourful cover yields a
+  // bright version of its own colour. Computed at use-time from
+  // --cover-accent (which JS sets per track), so it tracks the song.
+  --accent-live: color-mix(in oklab, var(--cover-accent, #d97757) 68%, white 32%);
+
+  // Cover glow colour (used by the cover's outer halo).
+  --cover-glow: rgba(0, 0, 0, 0);
+
+  // Plexamp palette (legacy — kept around in case the user wants to flip
+  // back to it).
+  --plx-accent-purple: #b14bff;
+  --plx-accent-pink: #ff3d8c;
+
+  // Typography — Fraunces for the editorial title, Inter for UI, JetBrains
+  // Mono for digits (time codes). The font files are loaded via a <link>
+  // in index.html; these variables just point at them with system
+  // fallbacks so the app is usable offline.
+  --font-display: 'Fraunces', 'Songti SC', 'STSong', Georgia, serif;
+  --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text',
+    'PingFang SC', 'Hiragino Sans GB', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+
+  // Animated period (in seconds) for the cover-card breathing shadow.
+  --bass-period: 1.4s;
+
+  // Live bass intensity in 0..1, written by the bass RAF loop reading the
+  // AnalyserNode's low-frequency bins. Drives the cover-card breathing.
+  --bass-intensity: 0;
+}

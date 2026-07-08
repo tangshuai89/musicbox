@@ -1,5 +1,4 @@
-import type { MusicProvider } from './api';
-import './SourceSelect.css';
+import type { MusicProvider } from '../../api';
 
 interface SourceSelectProps {
   onSelect: (provider: MusicProvider) => void;

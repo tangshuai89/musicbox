@@ -1,0 +1,243 @@
+@use '../abstracts' as *;
+
+// ─────────────────────────────────────────────────────────────────
+// Cover card (left, big) — FOREGROUND / hero tier. Brighter, more saturated
+// glass, a stronger cover-tinted rim, a heavier blur, and a bigger drop
+// shadow than the side cards, so it reads as the closest layer (visionOS
+// spatial depth). Holds the cover art + its mirror reflection + track meta.
+// ─────────────────────────────────────────────────────────────────
+
+.cover-card {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  padding: 16px;
+  gap: 14px;
+  background: color-mix(
+    in oklab,
+    var(--cover-accent) 12%,
+    rgba(255, 255, 255, 0.1)
+  );
+  border-color: color-mix(in oklab, var(--cover-accent) 30%, var(--border-strong));
+  @include backdrop-blur(44px, 190%);
+  box-shadow:
+    var(--shadow-lg),
+    0 0 0 1px color-mix(in oklab, var(--cover-accent) 12%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.16);
+}
+
+.cover-card:hover {
+  transform: translateY(-3px);
+  box-shadow:
+    var(--shadow-lg),
+    0 24px 60px color-mix(in oklab, #000 45%, transparent),
+    0 0 0 1px color-mix(in oklab, var(--cover-accent) 18%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.18);
+}
+
+// Cover stack: original cover-art on top + a blurred mirror reflection
+// below. Both share the same background-image (set on .cover-art via JS;
+// the reflection reads background-image: inherit). overflow:hidden clips the
+// reflection to the rounded shape. The track-change animation lives here:
+// the parent has key={track.id} so React remounts the stack on each track,
+// replaying this keyframe.
+.cover-stack {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border-radius: calc(var(--radius-xl) - 8px);
+  overflow: hidden;
+  animation: cover-stack-enter 0.55s cubic-bezier(0.34, 1.4, 0.55, 1) both;
+}
+
+@keyframes cover-stack-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes cover-meta-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cover-stack,
+  .cover-meta {
+    animation: none;
+  }
+}
+
+.cover-art {
+  position: absolute;
+  inset: 0;
+  background-color: var(--bg-secondary);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  box-shadow:
+    0 20px 50px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(255, 255, 255, 0.06);
+  transition: box-shadow 0.8s var(--ease-out);
+}
+
+// Mirror reflection: bottom 30% of the stack, vertically flipped, blurred,
+// and faded out with a top-to-bottom mask so it bleeds into the dark
+// background instead of cutting hard at the cover edge.
+.cover-art-reflection {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 30%;
+  background-image: inherit;
+  background-size: 100% auto;
+  background-position: bottom center;
+  transform: scaleY(-1);
+  filter: blur(8px);
+  opacity: 0.5;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.95) 0%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.95) 0%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  pointer-events: none;
+}
+
+// The cover art "breathes" with the bass while playing. Bass intensity
+// (0..1, written to --bass-intensity by the bass RAF loop) drives the scale
+// and glow DIRECTLY — no CSS keyframe. Driving transform/box-shadow straight
+// from the variable means the value eases to its new target each frame; the
+// 90ms transition smooths the frame-to-frame steps without lagging the beat.
+.cover-card.is-playing .cover-art {
+  transform: scale(calc(1 + var(--bass-intensity, 0) * 0.03));
+  box-shadow:
+    0 22px 55px rgba(0, 0, 0, 0.5),
+    0 0 calc(70px + var(--bass-intensity, 0) * 90px)
+      calc(var(--bass-intensity, 0) * 8px) var(--cover-glow),
+    0 0 0 1px rgba(255, 255, 255, 0.08);
+  transition: transform 0.09s linear, box-shadow 0.09s linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cover-card.is-playing .cover-art {
+    transform: none;
+    transition: none;
+  }
+}
+
+// Sheen sweep: a diagonal translucent highlight that glides across the card
+// every 8s. The keyframe holds it off-screen 60%→100% so it reads as an
+// event, not a constant shimmer. mix-blend-mode: screen keeps it additive.
+.cover-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 55%;
+  height: 100%;
+  background: linear-gradient(
+    100deg,
+    transparent 30%,
+    rgba(255, 255, 255, 0.09) 50%,
+    transparent 70%
+  );
+  transform: translateX(-100%);
+  animation: cover-sheen 8s ease-in-out infinite;
+  pointer-events: none;
+  z-index: z('sheen');
+  mix-blend-mode: screen;
+}
+
+@keyframes cover-sheen {
+  0% {
+    transform: translateX(-100%);
+  }
+  55% {
+    transform: translateX(220%);
+  }
+  100% {
+    transform: translateX(220%);
+  }
+}
+
+// While the search overlay is open, pause the sheen. The overlay's
+// backdrop-filter re-samples the cover behind it; a moving sheen would
+// flicker through the blur on every scroll repaint.
+.app.search-open .cover-card::after {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cover-card::after {
+    animation: none;
+  }
+}
+
+.cover-art-placeholder {
+  position: absolute;
+  inset: 0;
+  @include flex-center;
+  font-family: var(--font-display);
+  font-size: 96px;
+  color: var(--text-tertiary);
+  opacity: 0.4;
+}
+
+.cover-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  // Slide-in animation: parent has key={track.id} so React remounts it on
+  // every track change, replaying this. The cubic-bezier with y > 1 gives a
+  // slight overshoot (spring landing). Delayed 0.08s so the cover "arrives"
+  // first, then the text follows.
+  animation: cover-meta-enter 0.45s cubic-bezier(0.34, 1.4, 0.55, 1) 0.08s both;
+}
+
+.track-title {
+  font-family: var(--font-display);
+  font-size: clamp(28px, 3.6vw, 40px);
+  font-weight: 500;
+  font-variation-settings: 'opsz' 144, 'SOFT' 30;
+  letter-spacing: -0.022em;
+  color: var(--text-primary);
+  line-height: 1.05;
+  @include truncate;
+}
+
+.track-artist {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  letter-spacing: 0;
+  @include truncate;
+}
+
+.track-album {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-tertiary);
+  font-style: italic;
+  @include truncate;
+  margin-top: 2px;
+}
