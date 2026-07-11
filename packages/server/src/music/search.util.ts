@@ -48,51 +48,103 @@ export const PLAY_PRIORITY: MusicProvider[] = [
   'spotify',
 ];
 
-/** 将去重后的 track 和所有平台的原始结果聚合为 UnifiedSearchItem。 */
+/** 同 normalizeKey 的两首视为"同一版本"的最大 duration 差（秒）。与
+ *  match.service 的 DURATION_TOLERANCE_SEC 保持一致。 */
+export const VERSION_DURATION_TOLERANCE_SEC = 3;
+
+/**
+ * 在同一个 normalizeKey 组内，按 duration 就近聚类成「版本」。
+ * 每个 cluster = 一个版本（一个 UnifiedSearchItem）。
+ *
+ * 规则：
+ *  - duration ≤ 0（未知，如部分 Deezer 结果）不参与门槛 → 全部并入第一个
+ *    cluster（或自成一 cluster）。这保证老测试（duration 全 0）仍合并为一条。
+ *  - duration > 0：按升序贪心，cluster 宽度 ≤ TOLERANCE（anchor=cluster 最小值），
+ *    差 > TOLERANCE 就开新 cluster。→ "晴天"的 album/live/remix 各自成条。
+ */
+function clusterByDuration(entries: RawSearchEntry[]): RawSearchEntry[][] {
+  const withDur = entries
+    .filter((e) => e.track.duration > 0)
+    .sort((a, b) => a.track.duration - b.track.duration);
+  const zeroDur = entries.filter((e) => !(e.track.duration > 0));
+
+  const clusters: { anchor: number; items: RawSearchEntry[] }[] = [];
+  for (const e of withDur) {
+    const last = clusters[clusters.length - 1];
+    if (
+      last &&
+      e.track.duration - last.anchor <= VERSION_DURATION_TOLERANCE_SEC
+    ) {
+      last.items.push(e);
+    } else {
+      clusters.push({ anchor: e.track.duration, items: [e] });
+    }
+  }
+  if (zeroDur.length) {
+    if (clusters.length) clusters[0].items.push(...zeroDur);
+    else clusters.push({ anchor: 0, items: zeroDur });
+  }
+  return clusters.map((c) => c.items);
+}
+
+/**
+ * 将所有平台的原始搜索结果聚合为 UnifiedSearchItem。
+ *
+ * 先按 normalizeKey（歌名+歌手）分组，再在组内按 duration 聚类成「版本」——
+ * 同名不同时长的版本（album / live / remix ...）各自成条，跨平台**同版本**
+ * （时长接近）才合并。这样搜索里能看到多个版本，点 ❤ 时 sources 里就是
+ * 同一个版本的跨平台源。
+ *
+ * `deduped` 参数保留是为了兼容旧签名/测试；分组逻辑不再依赖它。
+ */
 export function buildUnifiedItems(
-  deduped: Map<string, Track>,
+  _deduped: Map<string, Track>,
   all: RawSearchEntry[],
 ): UnifiedSearchItem[] {
-  // group: dedup key → 各平台的 SourceInfo
-  const grouped = new Map<string, { main: Track; sources: SourceInfo[] }>();
-
-  for (const { track } of all) {
-    const key = normalizeKey(track.title, track.artist);
-    const main = deduped.get(key)!;
-    const source: SourceInfo = {
-      platform: track.provider,
-      trackId: track.id,
-      // QQ/网易云的搜索结果默认有版权（搜索阶段无法完全判断，
-      // 播放时 getStreamUrl 才最终裁决）。
-      hasCopyright: true,
-      url: track.audioUrl,
-      // 透传 QQ 的 media_mid，让统一搜索结果走「标准→320→无损」时仍可升级。
-      mediaMid: track.mediaMid,
-    };
-
-    if (!grouped.has(key)) {
-      grouped.set(key, { main, sources: [] });
-    }
-    grouped.get(key)!.sources.push(source);
+  // 1) 按 normalizeKey 分组
+  const byKey = new Map<string, RawSearchEntry[]>();
+  for (const e of all) {
+    const key = normalizeKey(e.track.title, e.track.artist);
+    const arr = byKey.get(key) ?? [];
+    arr.push(e);
+    byKey.set(key, arr);
   }
 
-  return [...grouped.values()].map(({ main, sources }) => {
-    // bestSource：按 PLAY_PRIORITY 选优先级最高、且有版权（hasCopyright）的
-    // 平台。当前搜索阶段 hasCopyright 恒为 true，但显式判断能在未来 provider
-    // 真正裁决版权时自动生效——与 types.ts 上的 doc 保持一致（之前漏判）。
-    const bestSource =
-      PLAY_PRIORITY.find((p) =>
-        sources.some((s) => s.platform === p && s.hasCopyright),
-      ) ?? null;
-    return {
-      id: `merged-${main.provider}-${main.id}`,
-      title: main.title,
-      artist: main.artist,
-      album: main.album,
-      coverUrl: main.coverUrl,
-      duration: main.duration,
-      sources,
-      bestSource,
-    };
-  });
+  const items: UnifiedSearchItem[] = [];
+  for (const entries of byKey.values()) {
+    // 2) 组内按 duration 聚类成版本
+    for (const cluster of clusterByDuration(entries)) {
+      const sources: SourceInfo[] = cluster.map(({ track }) => ({
+        platform: track.provider,
+        trackId: track.id,
+        // QQ/网易云的搜索结果默认有版权（搜索阶段无法完全判断，
+        // 播放时 getStreamUrl 才最终裁决）。
+        hasCopyright: true,
+        url: track.audioUrl,
+        // 透传 QQ 的 media_mid，让统一搜索结果走「标准→320→无损」时仍可升级。
+        mediaMid: track.mediaMid,
+      }));
+      // main：取 cluster 内优先级最高平台的 track（决定 id / 展示信息），
+      // 保证同一版本的 id 稳定、标题优先用 QQ/网易云的中文名。
+      const main =
+        PLAY_PRIORITY.map((p) =>
+          cluster.find((e) => e.track.provider === p),
+        ).find(Boolean)?.track ?? cluster[0].track;
+      const bestSource =
+        PLAY_PRIORITY.find((p) =>
+          sources.some((s) => s.platform === p && s.hasCopyright),
+        ) ?? null;
+      items.push({
+        id: `merged-${main.provider}-${main.id}`,
+        title: main.title,
+        artist: main.artist,
+        album: main.album,
+        coverUrl: main.coverUrl,
+        duration: main.duration,
+        sources,
+        bestSource,
+      });
+    }
+  }
+  return items;
 }

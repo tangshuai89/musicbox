@@ -2,6 +2,7 @@ import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { Track } from './music.service';
 import { ProviderSession } from '../common/session';
 import { type LyricLine, parseLrc } from '../common/lyrics';
+import { encryptRequest, decryptResponse, zzcSign } from './qq-crypto';
 
 /** QQ 音质档位。standard=m4a(默认)，high=320mp3，lossless=flac（需会员）。 */
 export type QqQuality = 'standard' | 'high' | 'lossless';
@@ -254,6 +255,171 @@ export class QqMusicProvider {
   private getGtk(session: ProviderSession): string {
     const skey = session.qqCookies?.skey ?? session.qqCookies?.p_skey;
     return skey ? this.computeGtk(skey) : '5381';
+  }
+
+  // ── 收藏「我喜欢」（写操作，走加密通道） ─────────────────────
+
+  /** 从 cookie 里取 qm_keyst（加密通道鉴权用）。 */
+  private getQmKeyst(session: ProviderSession): string | undefined {
+    if (session.qqCookies?.qm_keyst) return session.qqCookies.qm_keyst;
+    // 兜底：从拼好的 cookie 头里抠
+    const m = /(?:^|;\s*)qm_keyst=([^;]+)/.exec(session.qqCookie ?? '');
+    return m?.[1];
+  }
+
+  /**
+   * 走 QQ 音乐 web 端的加密+签名通道调 musics.fcg（写操作专用）。
+   * 明文 musicu.fcg 对写操作返回 500026，只有这条加密通道能通。
+   * 返回解密后的 req_0（{ code, data }）。
+   */
+  private async musicsEncPost(
+    session: ProviderSession,
+    module: string,
+    method: string,
+    param: Record<string, unknown>,
+    tsMs: number,
+  ): Promise<{ code?: number; data?: unknown } | undefined> {
+    const uin = session.qqUin ?? '';
+    const qmKeyst = this.getQmKeyst(session);
+    const reqData = {
+      comm: {
+        cv: 4747474,
+        ct: 24,
+        format: 'json',
+        inCharset: 'utf-8',
+        outCharset: 'utf-8',
+        notice: 0,
+        platform: 'yqq.json',
+        needNewCode: 1,
+        uin: Number(uin) || 0,
+        g_tk_new_20200303: 1083888122,
+        g_tk: 1083888122,
+      },
+      req_0: { module, method, param },
+    };
+    const json = JSON.stringify(reqData);
+    const sign = zzcSign(json);
+    const body = encryptRequest(reqData);
+    const url =
+      `https://u6.y.qq.com/cgi-bin/musics.fcg?_=${tsMs}` +
+      `&encoding=ag-1&sign=${sign}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain',
+        Accept: 'application/octet-stream',
+        'User-Agent': QqMusicProvider.UA,
+        Referer: 'https://y.qq.com/',
+        Cookie: `qm_keyst=${qmKeyst ?? ''}; uin=${uin}`,
+      },
+      body,
+    });
+    const buf = Buffer.from(await res.arrayBuffer());
+    const text = decryptResponse(buf);
+    const parsed = JSON.parse(text) as {
+      req_0?: { code?: number; data?: unknown };
+    };
+    return parsed.req_0;
+  }
+
+  /**
+   * 把 songmid 解析成数字 songId（加密写接口要 songId，而我们播放队列里
+   * 存的是 songmid）。走 musicu 的 song_detail 模块。失败返回 null。
+   */
+  async resolveSongId(
+    session: ProviderSession,
+    songmid: string,
+  ): Promise<number | null> {
+    const body = {
+      comm: { ct: 24, cv: 0 },
+      req_0: {
+        module: 'music.pf_song_detail_svr',
+        method: 'get_song_detail_yqq',
+        param: { song_mid: songmid },
+      },
+    };
+    try {
+      const r = await fetch(
+        'https://u.y.qq.com/cgi-bin/musicu.fcg?format=json&inCharset=utf8&outCharset=utf-8',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': QqMusicProvider.UA,
+            Referer: 'https://y.qq.com/',
+            Cookie: session.qqCookie ?? '',
+          },
+          body: JSON.stringify(body),
+        },
+      );
+      const j = (await r.json()) as {
+        req_0?: { data?: { track_info?: { id?: number } } };
+      };
+      return j.req_0?.data?.track_info?.id ?? null;
+    } catch (err) {
+      this.logger.warn(
+        `QQ resolveSongId failed for ${songmid}: ${(err as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * 收藏一首歌到「我喜欢」（dirId=201）。幂等：已收藏的再调也无害。
+   * @param songmid 播放队列里的 QQ trackId（songmid）
+   * @param tsMs    时间戳（签名 URL 用；由调用方传入，便于测试/复现）
+   */
+  async like(
+    session: ProviderSession,
+    songmid: string,
+    tsMs: number,
+  ): Promise<boolean> {
+    return this.setFav(session, songmid, true, tsMs);
+  }
+
+  /** 从「我喜欢」移除一首歌（DelSonglist）。 */
+  async unlike(
+    session: ProviderSession,
+    songmid: string,
+    tsMs: number,
+  ): Promise<boolean> {
+    return this.setFav(session, songmid, false, tsMs);
+  }
+
+  private async setFav(
+    session: ProviderSession,
+    songmid: string,
+    fav: boolean,
+    tsMs: number,
+  ): Promise<boolean> {
+    const songId = await this.resolveSongId(session, songmid);
+    if (!songId) {
+      this.logger.warn(`QQ setFav: cannot resolve songId for ${songmid}`);
+      return false;
+    }
+    const req = await this.musicsEncPost(
+      session,
+      'music.musicasset.PlaylistDetailWrite',
+      fav ? 'AddSonglist' : 'DelSonglist',
+      { dirId: 201, v_songInfo: [{ songType: 0, songId }] },
+      tsMs,
+    );
+    const ok = req?.code === 0;
+    if (!ok) {
+      this.logger.warn(
+        `QQ setFav(${fav}) ${songmid} → req code=${req?.code ?? 'n/a'}`,
+      );
+    }
+    return ok;
+  }
+
+  /**
+   * 拉「我喜欢」里所有 songmid 的集合（给 isLiked 检查用）。复用 fetchLiked。
+   * 注意：调用方应缓存，别每次切歌都拉（1000+ 首）。
+   */
+  async fetchLikedMidSet(session: ProviderSession): Promise<Set<string>> {
+    const tracks = await this.fetchLiked(session, 2000);
+    return new Set(tracks.map((t) => t.id));
   }
 
   /**

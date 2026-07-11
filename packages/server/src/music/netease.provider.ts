@@ -320,23 +320,48 @@ export class NeteaseMusicProvider {
     return data.data?.[0];
   }
 
-  /** 给一首歌点红心。 */
-  async like(session: ProviderSession, songId: string): Promise<boolean> {
+  /**
+   * 红心开关：把歌加入 / 移出「我喜欢的音乐」（specialType=5 歌单）。
+   * radio/like 的 like=true/false 是网易云真正的「红心 / 取消红心」切换，
+   * 取消时会把歌从「我喜欢的音乐」歌单删掉。
+   */
+  private async setRadioLike(
+    session: ProviderSession,
+    songId: string,
+    liked: boolean,
+  ): Promise<boolean> {
     const data = await this.apiCall<{ code: number }>(
       session,
       'https://music.163.com/api/radio/like',
       {
         alg: 'itembased',
         trackId: String(songId),
-        like: 'true',
+        like: liked ? 'true' : 'false',
         time: '3',
       },
     );
     return data.code === 200;
   }
 
-  /** 标记「不喜欢」，私人 FM 会减少推荐。 */
+  /** 给一首歌点红心（加入「我喜欢的音乐」）。 */
+  async like(session: ProviderSession, songId: string): Promise<boolean> {
+    return this.setRadioLike(session, songId, true);
+  }
+
+  /**
+   * 取消红心：从「我喜欢的音乐」移除（radio/like?like=false）。
+   *
+   * ⚠️ 不要用 radio/trash/add——那是私人 FM 的「不喜欢」，只会把歌丢进
+   * 垃圾桶减少推荐，**不会**把它从「我喜欢的音乐」歌单里删掉；而 fetchLiked
+   * 读的正是那个歌单，用 trash 取消会出现「取消了却还在收藏里、下次 detect
+   * 又被重新点亮」的死循环。踩/不喜欢请用 fmTrash。
+   */
   async unlike(session: ProviderSession, songId: string): Promise<boolean> {
+    return this.setRadioLike(session, songId, false);
+  }
+
+  /** 私人 FM「不喜欢 / 踩」：加入垃圾桶，减少同类推荐（≠ 取消红心）。 */
+  async fmTrash(session: ProviderSession, songId: string): Promise<boolean> {
     const data = await this.apiCall<{ code: number }>(
       session,
       'https://music.163.com/api/radio/trash/add',

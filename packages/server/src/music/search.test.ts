@@ -168,6 +168,46 @@ function makeTrack(
   console.log('✅ 9b. Spotify 可当 bestSource');
 }
 
+// ── 9c. duration 门槛：同名不同时长 = 不同版本，各自成条 ────
+{
+  const all = [
+    // 三个 "If I Ain't Got You"：album 228s、live 284s、remix 176s
+    { track: makeTrack('qq', 'qq-a', "If I Ain't Got You", 'Alicia Keys', {
+        duration: 228 }), platform: 'qq' },
+    { track: makeTrack('qq', 'qq-b', "If I Ain't Got You", 'Alicia Keys', {
+        duration: 284 }), platform: 'qq' },
+    { track: makeTrack('qq', 'qq-c', "If I Ain't Got You", 'Alicia Keys', {
+        duration: 176 }), platform: 'qq' },
+    // 网易云的 album 版 227s → 应与 qq-a(228s) 归为同一版本
+    { track: makeTrack('netease', 'ne-a', "If I Ain't Got You", 'Alicia Keys', {
+        duration: 227 }), platform: 'netease' },
+  ];
+  const deduped = dedupTracks(all);
+  const items = buildUnifiedItems(deduped, all);
+  assert.strictEqual(items.length, 3, '3 个不同时长版本应分成 3 条');
+  const album = items.find((it) => Math.abs(it.duration - 228) <= 3);
+  assert.ok(album, '应有 album(228s) 版本');
+  assert.strictEqual(
+    album.sources.length,
+    2,
+    'album 版本应含 qq(228)+netease(227) 两个同版本 source',
+  );
+  console.log('✅ 9c. duration 门槛拆分版本 + 跨平台同版本合并');
+}
+
+// ── 9d. duration=0（未知）仍合并为一条（老行为不破坏）────
+{
+  const all = [
+    { track: makeTrack('qq', 'qq-1', '晴天', '周杰伦'), platform: 'qq' },
+    { track: makeTrack('netease', 'ne-1', '晴天', '周杰伦'), platform: 'netease' },
+  ];
+  const deduped = dedupTracks(all);
+  const items = buildUnifiedItems(deduped, all);
+  assert.strictEqual(items.length, 1, 'duration 未知时应仍合并为一条');
+  assert.strictEqual(items[0].sources.length, 2);
+  console.log('✅ 9d. duration=0 保持合并');
+}
+
 // ── 10. 各 source 都有 url / hasCopyright 默认 true ──────────
 {
   const all = [

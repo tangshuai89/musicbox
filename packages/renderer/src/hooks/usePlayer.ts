@@ -9,7 +9,9 @@ import {
   fetchNextTrack,
   toggleLike,
   fanOutLike,
+  detectLiked,
   dislike,
+  dislikeMerged,
   pickPlayableTrack,
   API_ORIGIN,
 } from '../api';
@@ -71,12 +73,18 @@ export function usePlayer(audioRef: RefObject<HTMLAudioElement | null>) {
   // results instead of hitting the server radio. Held in a ref so
   // loadNextTrack's closure doesn't read a stale value. Unified search adds
   // unifiedItems + mergedId for the heart fan-out path.
+  // `unifiedItems` is kept ALIGNED with `tracks` (both index by idx) — playSearch
+  // drops non-playable items from BOTH so idx maps to the right unified item.
+  // mergedId is derived per-track as unifiedItems[idx].id (not a fixed field).
   const queueRef = useRef<{
     tracks: Track[];
     idx: number;
     unifiedItems?: UnifiedSearchItem[];
-    mergedId?: string;
   } | null>(null);
+  // Guards the async detect-liked result: only apply if the queue is still on
+  // the same unified track we detected for (avoids a stale detect clobbering a
+  // newer song's ❤ state after a fast skip).
+  const activeMergedIdRef = useRef<string | undefined>(undefined);
   // On source switch with a track playing, skip one provider-change auto-load
   // so the current song keeps playing until it ends / the user skips.
   const skipAutoLoadRef = useRef(false);
@@ -174,6 +182,38 @@ export function usePlayer(audioRef: RefObject<HTMLAudioElement | null>) {
     [presentCover, audioRef],
   );
 
+  /**
+   * 切歌后的红心检测：查这首统一 track 在各平台的红心情况；任一平台已 ❤ →
+   * 后端补齐其余平台 → 前端把 ❤ 点亮 + 角标显示平台数。用 activeMergedIdRef
+   * 防止快速切歌时旧结果盖掉新歌状态。
+   */
+  const detectAndApplyLiked = useCallback(
+    async (unified: UnifiedSearchItem | undefined) => {
+      activeMergedIdRef.current = unified?.id;
+      if (!unified) {
+        setFanOutCount(0);
+        return;
+      }
+      const sources = unified.sources
+        .filter((s) => s.hasCopyright)
+        .map((s) => ({ platform: s.platform, trackId: s.trackId }));
+      if (!sources.length) {
+        setFanOutCount(0);
+        return;
+      }
+      try {
+        const r = await detectLiked(unified.id, sources);
+        // 只在还停留在这首歌时应用（防快速切歌竞态）。
+        if (activeMergedIdRef.current !== unified.id) return;
+        setFanOutCount(r.liked ? r.fannedOutTo.length : 0);
+        setTrack((prev) => (prev ? { ...prev, liked: r.liked } : prev));
+      } catch {
+        // 检测失败不影响播放，静默。
+      }
+    },
+    [],
+  );
+
   const loadNextTrack = useCallback(async () => {
     if (!provider) return;
     // Search mode: advance within the results queue (looping).
@@ -181,6 +221,7 @@ export function usePlayer(audioRef: RefObject<HTMLAudioElement | null>) {
     if (q && q.tracks.length) {
       q.idx = (q.idx + 1) % q.tracks.length;
       presentTrack(q.tracks[q.idx]);
+      void detectAndApplyLiked(q.unifiedItems?.[q.idx]);
       return;
     }
     setLoading(true);
@@ -196,38 +237,41 @@ export function usePlayer(audioRef: RefObject<HTMLAudioElement | null>) {
     } finally {
       setLoading(false);
     }
-  }, [provider, deezerPreset, presentTrack]);
+  }, [provider, deezerPreset, presentTrack, detectAndApplyLiked]);
 
   /** Play a search result: parse UnifiedSearchItem[] into a playable queue,
-   *  dropping items with no playable source. Stores unifiedItems + mergedId
-   *  so handleLike can take the fan-out path. */
+   *  dropping items with no playable source. Keeps unifiedItems aligned with
+   *  tracks so handleLike / detect can map idx → the right unified item. */
   const playSearch = useCallback(
     (unifiedItems: UnifiedSearchItem[], index: number) => {
-      const playable: { track: Track; srcIndex: number }[] = [];
+      // Keep track+unified ALIGNED: drop non-playable from both so idx maps
+      // to the right unified item (for per-song ❤ detect / fan-out).
+      const playable: { track: Track; unified: UnifiedSearchItem }[] = [];
       unifiedItems.forEach((it, i) => {
         const t = pickPlayableTrack(it);
-        if (t) playable.push({ track: t, srcIndex: i });
+        if (t) playable.push({ track: t, unified: unifiedItems[i] });
       });
       const targetSrcIndex = unifiedItems[index] ? index : 0;
-      const startIdx = playable.findIndex((p) => p.srcIndex === targetSrcIndex);
+      const startIdx = playable.findIndex(
+        (p) => p.unified === unifiedItems[targetSrcIndex],
+      );
       if (startIdx < 0 || playable.length === 0) {
         setError('没有可播放的音源');
         return;
       }
-      const target = unifiedItems[targetSrcIndex];
       queueRef.current = {
         tracks: playable.map((p) => p.track),
         idx: startIdx,
-        unifiedItems,
-        mergedId: target?.id,
+        unifiedItems: playable.map((p) => p.unified),
       };
       setSearchOpen(false);
       setError(null);
       // New search context → clear the old fan-out count.
       setFanOutCount(0);
       presentTrack(playable[startIdx].track);
+      void detectAndApplyLiked(playable[startIdx].unified);
     },
-    [presentTrack],
+    [presentTrack, detectAndApplyLiked],
   );
 
   // Auto-load on provider / preset change (but skip once when delaying a
@@ -435,26 +479,26 @@ export function usePlayer(audioRef: RefObject<HTMLAudioElement | null>) {
 
   const handleLike = async () => {
     if (!track || !provider) return;
-    // Unified search path: fan out to every hasCopyright platform.
+    // 语义：只加不减。点 ❤ = 确保这首歌在所有有版权的平台都收藏；已收藏的
+    // 保持不动，永远不会取消。
+    // Unified search path: fan out ❤ to every hasCopyright platform.
     const q = queueRef.current;
     const current = q?.unifiedItems?.[q.idx];
-    if (q?.mergedId && current && current.bestSource) {
-      const nextLiked = !(fanOutCount > 0);
+    if (current && current.bestSource) {
       const sources = current.sources
         .filter((s) => s.hasCopyright)
         .map((s) => ({ platform: s.platform, trackId: s.trackId }));
       try {
-        const result = await fanOutLike(q.mergedId, sources, nextLiked);
-        // fannedOutTo is now "all platforms this mergedId has been liked on",
-        // so the badge count = how many platforms have ❤ for this song.
-        setFanOutCount(nextLiked ? result.fannedOutTo.length : 0);
-        setTrack((prev) => (prev ? { ...prev, liked: nextLiked } : prev));
+        const result = await fanOutLike(current.id, sources, true); // 只加
+        setFanOutCount(result.fannedOutTo.length);
+        setTrack((prev) => (prev ? { ...prev, liked: true } : prev));
       } catch (e) {
         setError(`心动作业失败：${(e as Error).message}`);
       }
       return;
     }
-    // Single-platform path (radio / now-playing) — behaviour unchanged.
+    // Single-platform path (radio): 已 ❤ 就不动（只加不减）。
+    if (track.liked) return;
     const result = await toggleLike(provider, track.id);
     if (result.success) {
       setTrack((prev) => (prev ? { ...prev, liked: result.liked } : prev));
@@ -464,6 +508,25 @@ export function usePlayer(audioRef: RefObject<HTMLAudioElement | null>) {
 
   const handleDislike = async () => {
     if (!track || !provider) return;
+    // Unified search path: 踩 = 取消这首歌在所有平台的红心 + 标记不喜欢，
+    // 否则某平台残留的红心会在下次切到这首歌时被 detect 重新点亮/收藏回来。
+    const q = queueRef.current;
+    const current = q?.unifiedItems?.[q.idx];
+    if (current && current.bestSource) {
+      const sources = current.sources
+        .filter((s) => s.hasCopyright)
+        .map((s) => ({ platform: s.platform, trackId: s.trackId }));
+      try {
+        await dislikeMerged(current.id, sources);
+        setFanOutCount(0);
+        setTrack((prev) => (prev ? { ...prev, liked: false } : prev));
+      } catch {
+        // 踩失败不阻塞切歌，静默。
+      }
+      loadNextTrack();
+      return;
+    }
+    // Single-platform path (radio): 单平台标记不喜欢。
     await dislike(provider, track.id);
     loadNextTrack();
   };

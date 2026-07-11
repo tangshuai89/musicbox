@@ -52,8 +52,18 @@ const spotify = {
   },
 };
 const match = {};
+// 同步队列 stub：搜索路径用不到，只需让构造函数里的 registerProcessor 不炸。
+const likeSync = { registerProcessor: () => {}, enqueue: () => {} };
 
-const svc = new MusicService(fakeStorage, qq, netease, deezer, spotify, match);
+const svc = new MusicService(
+  fakeStorage,
+  qq,
+  netease,
+  deezer,
+  spotify,
+  match,
+  likeSync,
+);
 
 // 未登录任何平台的 session。
 const session = { id: 'sess-test', createdAt: Date.now(), providers: {} };
@@ -89,6 +99,7 @@ async function main() {
       deezer,
       spotify,
       match,
+      likeSync,
     );
     const res = await svc2.searchUnified(session, 'test', 1, 20);
     const platforms = new Set(

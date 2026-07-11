@@ -24,6 +24,7 @@ import {
 } from './search.util';
 import { MatchService } from '../match/match.service';
 import { withTimeout } from '../common/timeout';
+import { LikeSyncQueue } from './like-sync.queue';
 
 /** unified search 单平台硬超时——5s。超过这个时间视为该平台缺席，
  *  不阻塞其他平台。Spotify 偶发 504 较常见，所以这个时间不能太松。 */
@@ -83,7 +84,14 @@ export class MusicService {
     private readonly deezer: DeezerMusicProvider,
     private readonly spotify: SpotifyMusicProvider,
     private readonly match: MatchService,
-  ) {}
+    private readonly likeSync: LikeSyncQueue,
+  ) {
+    // 把「同步一首歌的红心到某平台」的实际写操作交给同步队列的 worker 回调。
+    // 队列负责合并去重 / 串行 / 退避重试；这里只提供「怎么写一次」的逻辑。
+    this.likeSync.registerProcessor((session, platform, trackId, liked) =>
+      this.syncLikeRemoteOnce(session, platform, trackId, liked),
+    );
+  }
 
   private stateKey(sessionId: string): string {
     return `music:${sessionId}`;
@@ -523,11 +531,62 @@ export class MusicService {
     const ps = session.providers[provider];
     if (provider === 'netease' && ps?.musicU) {
       try {
-        await this.netease.unlike(ps, trackId);
+        // 踩 = 私人 FM「不喜欢」→ 走 fmTrash（垃圾桶），不是取消红心。
+        await this.netease.fmTrash(ps, trackId);
       } catch (err) {
         this.logger.warn(
           `netease trash sync failed: ${(err as Error).message}`,
         );
+      }
+    }
+    return { success: true };
+  }
+
+  /**
+   * 统一 track 的「踩」：跨平台彻底不想再听这首。一次性做三件事——
+   *  1. **取消跨平台红心**：走 fanOutLike(false)，按 state.fanOut[mergedId] 记录
+   *     的平台真正 unlike（网易云用正确接口从「我喜欢的音乐」移除，见
+   *     netease.unlike）+ 清 fanOut 记录 + 入队远端 unlike。这是本方法存在的
+   *     核心理由——修「踩了一首 fan-out 的歌，其它平台红心还在、下次 detect
+   *     又把它点亮/收藏回来」的复活循环。
+   *  2. **本地 disliked 标记**（每平台一首）：电台补歌时过滤，不再刷到。
+   *  3. **netease FM「不喜欢」**：best-effort 减少推荐（≠ 取消红心，第 1 步已做）。
+   *
+   * 与单平台 markDisliked 的区别：markDisliked 只动一个平台、且不碰红心；这里
+   * 是跨平台，并且把收藏也一并清掉。幂等：未曾心动过的歌，第 1 步是 no-op。
+   */
+  async dislikeMerged(
+    session: Session,
+    mergedId: string,
+    sources: Array<{ platform: MusicProvider; trackId: string }>,
+  ): Promise<{ success: boolean }> {
+    // 1. 取消跨平台红心（fanOutLike false 内部会 loadState/saveState + 入队，
+    //    await 完成后其状态已落盘，下面的 loadState 读到的是清理后的态）。
+    await this.fanOutLike(session, mergedId, sources, false);
+
+    // 2. 本地 disliked 标记（每平台一首，和 fan-out「每平台一首」口径一致）。
+    const state = this.loadState(session);
+    const byPlatform = this.groupByPlatform(sources);
+    const neteaseTargets: string[] = [];
+    for (const [platform, trackIds] of byPlatform) {
+      const trackId = trackIds[0];
+      state.providers[platform].disliked.add(trackId);
+      state.providers[platform].liked.delete(trackId); // fanOutLike 已清，双保险
+      if (platform === 'netease') neteaseTargets.push(trackId);
+    }
+    this.saveState(session, state);
+
+    // 3. netease FM「不喜欢」（减少推荐）。best-effort，失败不影响踩本身。
+    const ps = session.providers.netease;
+    if (ps?.musicU) {
+      for (const trackId of neteaseTargets) {
+        try {
+          await this.netease.fmTrash(ps, trackId);
+        } catch (err) {
+          this.logger.warn(
+            `netease fmTrash failed: ${(err as Error).message}`,
+          );
+        }
       }
     }
     return { success: true };
@@ -599,47 +658,243 @@ export class MusicService {
     return false; // 已是目标态，无改变
   }
 
-  /** 把 liked 状态同步到远端平台（best-effort，失败仅记录日志）。 */
-  private async syncLikeRemote(
+  /** 某平台当前 session 是否具备写红心的能力（已登录且非匿名）。
+   *  Deezer 匿名没有 user 红心概念 → 永远 false，不会入同步队列。 */
+  private canSyncLike(session: Session, provider: MusicProvider): boolean {
+    const ps = session.providers[provider];
+    switch (provider) {
+      case 'qq':
+        return !!ps?.qqCookie;
+      case 'netease':
+        return !!ps?.musicU;
+      case 'spotify':
+        return !!ps?.spotify;
+      default:
+        return false; // deezer
+    }
+  }
+
+  /**
+   * 同步一首歌的红心到某个平台的远端——**单次**写，供 LikeSyncQueue 的 worker
+   * 回调。成功 → 乐观更新本地缓存；失败 → throw（队列据此退避重试）。
+   *
+   * 与旧的 fire-and-forget `syncLikeRemote` 的区别：
+   *  - 不再自己吞异常，交给队列统一重试 + 记日志；
+   *  - 平台返回 code≠0 / success=false 视为失败并 throw（旧实现静默丢弃）。
+   *
+   * 未登录 / Deezer 匿名 → 直接返回（视为「无需同步」，不 throw、不占重试）。
+   */
+  private async syncLikeRemoteOnce(
     session: Session,
     provider: MusicProvider,
     trackId: string,
-    newLiked: boolean,
+    liked: boolean,
   ): Promise<void> {
-    // NetEase 和 Spotify 都有公开 ❤ API，这里做远端同步；QQ / Deezer 的
-    // radio-like / favorites API 都要登录态 + 签名，只在本地记录即可。
+    const ps = session.providers[provider];
+    if (provider === 'qq') {
+      if (!ps?.qqCookie) return;
+      const ts = Date.now();
+      const ok = liked
+        ? await this.qq.like(ps, trackId, ts)
+        : await this.qq.unlike(ps, trackId, ts);
+      if (!ok) throw new Error(`qq setFav(${liked}) returned false`);
+      this.updateLikedCache(session, 'qq', trackId, liked);
+      return;
+    }
     if (provider === 'netease') {
-      const ps = session.providers[provider];
       if (!ps?.musicU) return;
-      try {
-        if (newLiked) {
-          await this.netease.like(ps, trackId);
-        } else {
-          // netease 取消 ❤ = 移到 trash，netease.unlike 已实现
-          await this.netease.unlike(ps, trackId);
-        }
-      } catch (err) {
-        this.logger.warn(
-          `netease like sync failed: ${(err as Error).message}`,
-        );
+      // like → 加入「我喜欢的音乐」；unlike → radio/like?like=false 真正移除
+      // （不是 trash，见 netease.unlike 注释）。
+      const ok = liked
+        ? await this.netease.like(ps, trackId)
+        : await this.netease.unlike(ps, trackId);
+      if (!ok) {
+        throw new Error(`netease ${liked ? 'like' : 'unlike'} returned false`);
       }
+      this.updateLikedCache(session, 'netease', trackId, liked);
       return;
     }
     if (provider === 'spotify') {
-      const ps = session.providers[provider];
       if (!ps?.spotify) return;
-      try {
-        if (newLiked) {
-          await this.spotify.like(ps, trackId);
-        } else {
-          await this.spotify.unlike(ps, trackId);
-        }
-      } catch (err) {
-        this.logger.warn(
-          `spotify like sync failed: ${(err as Error).message}`,
-        );
+      const res = liked
+        ? await this.spotify.like(ps, trackId)
+        : await this.spotify.unlike(ps, trackId);
+      if (!res.success) {
+        throw new Error(`spotify ${liked ? 'like' : 'unlike'} failed`);
+      }
+      this.updateLikedCache(session, 'spotify', trackId, liked);
+      return;
+    }
+    // deezer：匿名，无远端红心 → 无需同步。
+  }
+
+  /** 把「每平台一首」的红心同步目标推入队列（MQ 思路：合并去重 + 异步重试）。
+   *  空目标直接忽略；不能写红心的平台（deezer/未登录）由入队方提前过滤。 */
+  private enqueueLikeSync(
+    session: Session,
+    mergedId: string,
+    liked: boolean,
+    targets: Array<{ platform: MusicProvider; trackId: string }>,
+  ): void {
+    if (!targets.length) return;
+    this.likeSync.enqueue({ session, mergedId, liked, targets });
+  }
+
+  // ── 跨平台红心检测 + 自动同步（切歌时用） ──────────────────
+
+  /**
+   * 每 session 每平台的「已红心 trackId 集合」缓存，避免每次切歌都拉整份
+   * 收藏列表（QQ 1000+ 首）。TTL 内直接查集合。
+   */
+  private readonly likedCache = new Map<
+    string,
+    { set: Set<string>; at: number }
+  >();
+  private static readonly LIKED_CACHE_TTL_MS = 5 * 60 * 1000;
+
+  private likedCacheKey(session: Session, provider: MusicProvider): string {
+    return `${session.id}:${provider}`;
+  }
+
+  /** 乐观更新缓存（我们自己写了 like/unlike 之后）。 */
+  private updateLikedCache(
+    session: Session,
+    provider: MusicProvider,
+    trackId: string,
+    liked: boolean,
+  ): void {
+    const entry = this.likedCache.get(this.likedCacheKey(session, provider));
+    if (!entry) return; // 还没建缓存就不管，下次拉的时候是新鲜的
+    if (liked) entry.set.add(trackId);
+    else entry.set.delete(trackId);
+  }
+
+  /**
+   * 取某平台「已红心 trackId 集合」（带 TTL 缓存）。只对已登录平台有效，
+   * 未登录 / Deezer 返回 null。
+   */
+  private async getLikedSet(
+    session: Session,
+    provider: MusicProvider,
+  ): Promise<Set<string> | null> {
+    const key = this.likedCacheKey(session, provider);
+    const cached = this.likedCache.get(key);
+    if (cached && Date.now() - cached.at < MusicService.LIKED_CACHE_TTL_MS) {
+      return cached.set;
+    }
+    const ps = session.providers[provider];
+    let set: Set<string> | null = null;
+    try {
+      if (provider === 'qq' && ps?.qqCookie) {
+        set = await this.qq.fetchLikedMidSet(ps);
+      } else if (provider === 'netease' && ps?.musicU) {
+        const tracks = await this.netease.fetchLiked(ps, 2000);
+        set = new Set(tracks.map((t) => t.id));
+      } else if (provider === 'spotify' && ps?.spotify) {
+        const tracks = await this.spotify.fetchLiked(ps, 2000);
+        set = new Set(tracks.map((t) => t.id));
+      }
+    } catch (err) {
+      this.logger.warn(
+        `getLikedSet(${provider}) failed: ${(err as Error).message}`,
+      );
+    }
+    if (set) this.likedCache.set(key, { set, at: Date.now() });
+    return set;
+  }
+
+  private async isLikedOn(
+    session: Session,
+    provider: MusicProvider,
+    trackId: string,
+  ): Promise<boolean> {
+    const set = await this.getLikedSet(session, provider);
+    return set?.has(trackId) ?? false;
+  }
+
+  /**
+   * 把 sources 按平台归组。统一搜索的合并 key 只按「歌名+歌手」归一化、没有
+   * 时长门槛，所以一首歌（如 "If I Ain't Got You"）常把同平台的十几个变体
+   * 版本塞进同一个 unified item 的 sources。fan-out 必须**每个平台最多一首**，
+   * 否则会把十几个变体全部收藏（实测 bug：点一首收藏一大堆）。
+   */
+  private groupByPlatform(
+    sources: Array<{ platform: MusicProvider; trackId: string }>,
+  ): Map<MusicProvider, string[]> {
+    const m = new Map<MusicProvider, string[]>();
+    for (const s of sources) {
+      const arr = m.get(s.platform) ?? [];
+      arr.push(s.trackId);
+      m.set(s.platform, arr);
+    }
+    return m;
+  }
+
+  /**
+   * 切歌时调：查这首统一 track 在各平台的红心情况。
+   *  - 任一平台已红心 → 把「其余有版权但还没红心」的平台也补上红心（fan-out），
+   *    返回 liked=true + 现在红心的完整平台列表。
+   *  - 全都没红心 → 返回 liked=false（不写任何东西）。
+   *
+   * **每个平台最多操作一首**：同平台若有多个变体源，只认/只写一首（优先已在
+   * 收藏里的那个变体，否则第一首）——否则会把同名的一堆变体全收藏。
+   * 只对已登录平台生效；Deezer / 未登录平台跳过。幂等：已红心的平台不重复写。
+   */
+  async detectLikedAndSync(
+    session: Session,
+    mergedId: string,
+    sources: Array<{ platform: MusicProvider; trackId: string }>,
+  ): Promise<{ liked: boolean; fannedOutTo: MusicProvider[] }> {
+    const byPlatform = this.groupByPlatform(sources);
+
+    // 每个平台：判断是否已红心（任一变体在收藏里就算），并选一个代表 trackId
+    // （已收藏的那个变体优先，否则第一个）。**每平台只认一首**——统一搜索会把
+    // 同名的一堆变体塞进同一 item，这里就是「不同步 20 个音源」的第一道闸。
+    const perPlatform = await Promise.all(
+      [...byPlatform.entries()].map(async ([platform, trackIds]) => {
+        const set = await this.getLikedSet(session, platform);
+        const likedId = set ? trackIds.find((id) => set.has(id)) : undefined;
+        return {
+          platform,
+          liked: Boolean(likedId),
+          canSync: this.canSyncLike(session, platform),
+          repId: likedId ?? trackIds[0],
+        };
+      }),
+    );
+
+    const anyLiked = perPlatform.some((p) => p.liked);
+    if (!anyLiked) {
+      // 没有任何平台红心 → 只读检测，什么都不写。
+      return { liked: false, fannedOutTo: [] };
+    }
+
+    // 有红心 → 检测本身只读；真正的「补齐其余平台」交给同步队列异步做。
+    //  - 已红心的平台：确认态，反映到本地 + 计入角标；
+    //  - 还没红心但能写的平台：乐观点亮本地 + 入队（每平台一首）后台补；
+    //  - 不能写红心的平台（deezer/未登录）：既不入队也不计角标。
+    const state = this.loadState(session);
+    const fannedOutTo: MusicProvider[] = [];
+    const targets: Array<{ platform: MusicProvider; trackId: string }> = [];
+    for (const p of perPlatform) {
+      if (p.liked) {
+        this.setLike(state, p.platform, p.repId, true);
+        fannedOutTo.push(p.platform);
+      } else if (p.canSync) {
+        this.setLike(state, p.platform, p.repId, true); // 乐观点亮
+        fannedOutTo.push(p.platform);
+        targets.push({ platform: p.platform, trackId: p.repId });
       }
     }
+    const deduped = [...new Set(fannedOutTo)];
+    state.fanOut[mergedId] = deduped;
+    this.saveState(session, state);
+
+    // 关键改动：远端写不再在切歌时内联执行，而是推入同步队列（MQ 思路）——
+    // 每平台一首、失败自动重试、不阻塞播放。检测→入队→后台同步解耦。
+    this.enqueueLikeSync(session, mergedId, true, targets);
+
+    return { liked: true, fannedOutTo: deduped };
   }
 
   async toggleLike(
@@ -650,8 +905,11 @@ export class MusicService {
     const state = this.loadState(session);
     const wasLiked = this.applyLikeToggle(state, provider, trackId);
     this.saveState(session, state);
-    // 同步到远端（best-effort，失败不影响本地）
-    void this.syncLikeRemote(session, provider, trackId, !wasLiked);
+    // 远端同步走队列（best-effort + 重试，不阻塞本地）。单平台用一个稳定
+    // 的合成 key，避免和统一搜索的 mergedId 撞车。
+    this.enqueueLikeSync(session, `single:${provider}:${trackId}`, !wasLiked, [
+      { platform: provider, trackId },
+    ]);
     return { success: true, liked: !wasLiked };
   }
 
@@ -665,9 +923,12 @@ export class MusicService {
    *
    * 单平台失败不阻塞其他平台；fannedOutTo 列出真正被这次操作影响的平台。
    *
-   * 实现要点：必须复用 applyLikeToggle + syncLikeRemote，**不能**直接调
-   * toggleLike——因为 toggleLike 内部 loadState / saveState 会和 fanOut
-   * 的外层 saveState 互相覆盖，导致"内层修改被外层旧 state 写回去"。
+   * 本地 like 集合**同步**更新（GET /music/liked 立即可见，e2e 依赖此），
+   * 远端写则统一推入同步队列（每平台一首 + 失败重试），不内联阻塞。
+   *
+   * 实现要点：必须复用 setLike + 同步队列，**不能**直接调 toggleLike——
+   * 因为 toggleLike 内部 loadState / saveState 会和 fanOut 的外层 saveState
+   * 互相覆盖，导致"内层修改被外层旧 state 写回去"。
    */
   async fanOutLike(
     session: Session,
@@ -688,25 +949,22 @@ export class MusicService {
     fannedOutTo: MusicProvider[];
   }> {
     const state = this.loadState(session);
-    /** 本次调用实际 flip 状态的平台（用于 sync remote / 日志）。 */
-    const flipped: MusicProvider[] = [];
+    /** 本次要推入同步队列的远端目标（每平台一首）。 */
+    const targets: Array<{ platform: MusicProvider; trackId: string }> = [];
 
     if (liked) {
       // 当前 mergedId 已心动的平台（保持）。这次 sources 里没列的旧
       // 平台也保留——避免"老 fan-out 记录被覆盖"丢状态。
       const current = new Set(state.fanOut[mergedId] ?? []);
-      for (const src of sources) {
-        current.add(src.platform);
-        try {
-          // setLike 是幂等的：已心动的不会被翻回 unlike
-          const changed = this.setLike(state, src.platform, src.trackId, true);
-          if (changed) flipped.push(src.platform);
-          void this.syncLikeRemote(session, src.platform, src.trackId, true);
-        } catch (err) {
-          this.logger.warn(
-            `fan-out like failed (${src.platform}/${src.trackId}): ${(err as Error).message}`,
-          );
-        }
+      // **每个平台只收藏一首**：统一搜索会把同名的一堆变体塞进同一 item 的
+      // sources（无时长门槛），遍历全部会把十几个变体全收藏。按平台取第一首。
+      const byPlatform = this.groupByPlatform(sources);
+      for (const [platform, trackIds] of byPlatform) {
+        const trackId = trackIds[0];
+        current.add(platform);
+        // setLike 是幂等的：已心动的不会被翻回 unlike（本地即时可见）。
+        this.setLike(state, platform, trackId, true);
+        targets.push({ platform, trackId });
       }
       state.fanOut[mergedId] = [...current];
     } else {
@@ -715,20 +973,15 @@ export class MusicService {
       for (const platform of toUnlike) {
         const src = sources.find((s) => s.platform === platform);
         if (!src) continue;
-        try {
-          const changed = this.setLike(state, platform, src.trackId, false);
-          if (changed) flipped.push(platform);
-          void this.syncLikeRemote(session, platform, src.trackId, false);
-        } catch (err) {
-          this.logger.warn(
-            `fan-out unlike failed (${platform}/${src.trackId}): ${(err as Error).message}`,
-          );
-        }
+        this.setLike(state, platform, src.trackId, false);
+        targets.push({ platform, trackId: src.trackId });
       }
       delete state.fanOut[mergedId];
     }
 
     this.saveState(session, state);
+    // 远端写走同步队列：合并去重、每平台一首、失败重试，不阻塞本次响应。
+    this.enqueueLikeSync(session, mergedId, liked, targets);
     // 返回"全集"——liked=true 时就是当前 fan-out 列表；liked=false 时空数组
     const fannedOutTo = liked ? state.fanOut[mergedId] ?? [] : [];
     return { success: true, liked, fannedOutTo };
