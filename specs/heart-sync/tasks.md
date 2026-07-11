@@ -35,8 +35,14 @@
 - [x] 17. `usePlayer.handleDislike`：统一队列上下文走 dislikeMerged + 熄灭 ❤/归零角标，
         单平台电台仍走 dislike
 
+## 后续修订（中危收尾 / heart-followups）
+- [x] F1. [#7] `loadNextTrack` radio 分支 `setFanOutCount(0)`（切回电台清角标）
+- [x] F2. [#10] `detectLikedAndSync` 写 fanOut 记录改「合并旧记录」而非覆盖
+- [x] F3. [#9] `primeLikedCache` + importLiked 三平台拉完顺手暖 `likedCache`
+- [ ] F4. [#5/#6/#8] 明确不做（见 spec「后续修订」——需产品决策再动）
+
 ## 验证
 - [x] 18. `npm run typecheck` 三包全过
-- [x] 19. `npm test`：like.e2e 扩到 11 项（+ dislike/merged 路由/取消/校验），全绿
+- [x] 19. `npm test`：like.e2e 12 项（+ dislike/merged 路由/取消/校验 + Deezer 排除），全绿
 - [x] 20. `npm run lint`（renderer）通过
 - [x] 21. `search-unified.e2e` 手工构造 `MusicService` 补第 7 个参数（likeSync stub）

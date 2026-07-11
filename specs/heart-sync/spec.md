@@ -165,3 +165,26 @@ interface LikeSyncTask {
 - 新端点 `dislike/merged` 放 controller，业务逻辑（取消红心 + 标记 + trash）放 service。
 - 外部调用统一 `fetch`；同步写不套整体超时（best-effort，队列自己控重试节奏）。
 - 网易云 like/unlike 收敛到 `setRadioLike(liked)`；trash 独立为 `fmTrash`。
+
+## 后续修订（中危收尾 / heart-followups）
+
+在检测 + 队列 + 踩取消 + Deezer 排除之外，补三个一致性 / 性能小修：
+
+- **[#7] 切回电台清角标**：radio（server）曲目不是 unified item、没有 fan-out。
+  `loadNextTrack` 进 radio 分支时 `setFanOutCount(0)`，否则上一首搜索歌的平台数
+  会残留在电台曲目上（❤ 填充仍由 `next.liked` 驱动，正常）。
+- **[#10] fanOut 记录合并而非覆盖**：`detectLikedAndSync` 写 `state.fanOut[mergedId]`
+  时与旧记录取并集（只留 likeable 平台）。某次搜索缺某平台 source（超时 / 聚类不同）
+  时，不再把那平台从记录里抹掉、角标少算；`dislikeMerged` 已 `delete` 整条记录，
+  故不会复活被取消的红心。
+- **[#9] importLiked 顺手暖缓存**：拉全量「我的喜欢」后 `primeLikedCache` 填充
+  `likedCache`，紧接着的切歌 detect 不必把 QQ 1000+ 首再重拉一遍（此前两条路径
+  各拉各的）。
+
+仍**不做**（既有限制 / 设计如此，需产品决策再动）：
+
+- **[#5] 两套真值源不主动对账**：`state.providers[].liked`（本地）与 `likedCache`
+  （远端派生）并存；队列重试已大幅收窄失配窗口，全量 reconcile 收益低、风险高。
+- **[#6] mergedId 跨次搜索漂移**：同 [不做什么] 所述，属版本拆分搜索的固有特性。
+- **[#8] 无「取消红心」正常入口**：手动 ❤ 是「只加不减」的设计；移除意图统一走
+  「踩」（dislikeMerged）。如需独立的取消红心按钮，属产品决策。

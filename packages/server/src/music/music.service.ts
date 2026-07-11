@@ -791,6 +791,20 @@ export class MusicService {
     else entry.set.delete(trackId);
   }
 
+  /** 用一份已拉到的红心列表整体填充缓存。importLiked 拉全量收藏时顺手复用，
+   *  避免紧接着的切歌 detect 又把 QQ 1000+ 首重拉一遍（importLiked 与 detect
+   *  之前是各拉各的，互不复用）。 */
+  private primeLikedCache(
+    session: Session,
+    provider: MusicProvider,
+    trackIds: string[],
+  ): void {
+    this.likedCache.set(this.likedCacheKey(session, provider), {
+      set: new Set(trackIds),
+      at: Date.now(),
+    });
+  }
+
   /**
    * 取某平台「已红心 trackId 集合」（带 TTL 缓存）。只对已登录平台有效，
    * 未登录 / Deezer 返回 null。
@@ -908,15 +922,22 @@ export class MusicService {
         targets.push({ platform: p.platform, trackId: p.repId });
       }
     }
-    const deduped = [...new Set(fannedOutTo)];
-    state.fanOut[mergedId] = deduped;
+    // 与已有 fanOut 记录**合并**而非覆盖：某次搜索可能没返回某平台的 source
+    // （平台超时缺席 / 变体聚类不同），但那首歌在该平台仍是红心的——直接覆盖
+    // 会把它从记录里抹掉、角标少算。合并保留旧平台（dislikeMerged 已 delete
+    // 整条记录，所以这里不会复活被取消的红心）。只留 likeable 平台。
+    const prev = (state.fanOut[mergedId] ?? []).filter((p) =>
+      this.isLikeable(p),
+    );
+    const merged = [...new Set([...prev, ...fannedOutTo])];
+    state.fanOut[mergedId] = merged;
     this.saveState(session, state);
 
     // 关键改动：远端写不再在切歌时内联执行，而是推入同步队列（MQ 思路）——
     // 每平台一首、失败自动重试、不阻塞播放。检测→入队→后台同步解耦。
     this.enqueueLikeSync(session, mergedId, true, targets);
 
-    return { liked: true, fannedOutTo: deduped };
+    return { liked: true, fannedOutTo: merged };
   }
 
   async toggleLike(
@@ -1070,6 +1091,7 @@ export class MusicService {
         const tracks = await this.netease.fetchLiked(ps, 1000);
         sourceResults.push({ provider: 'netease', count: tracks.length });
         allTracks.push(...tracks);
+        this.primeLikedCache(session, 'netease', tracks.map((t) => t.id));
       }
     } catch (err) {
       this.logger.warn(
@@ -1098,6 +1120,7 @@ export class MusicService {
         const tracks = await this.qq.fetchLiked(ps, 2000);
         sourceResults.push({ provider: 'qq', count: tracks.length });
         allTracks.push(...tracks);
+        this.primeLikedCache(session, 'qq', tracks.map((t) => t.id));
       }
     } catch (err) {
       this.logger.warn(`qq fetchLiked failed: ${(err as Error).message}`);
@@ -1121,6 +1144,7 @@ export class MusicService {
         const tracks = await this.spotify.fetchLiked(ps, 1000);
         sourceResults.push({ provider: 'spotify', count: tracks.length });
         allTracks.push(...tracks);
+        this.primeLikedCache(session, 'spotify', tracks.map((t) => t.id));
       }
     } catch (err) {
       this.logger.warn(

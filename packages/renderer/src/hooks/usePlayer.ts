@@ -224,6 +224,11 @@ export function usePlayer(audioRef: RefObject<HTMLAudioElement | null>) {
       void detectAndApplyLiked(q.unifiedItems?.[q.idx]);
       return;
     }
+    // Radio (server) track: not a unified item, so there's no fan-out. Clear
+    // the badge, otherwise it keeps showing the last search song's platform
+    // count on top of unrelated radio tracks. `next.liked` (from the server)
+    // still drives the ❤ fill via presentTrack.
+    setFanOutCount(0);
     setLoading(true);
     setError(null);
     try {
