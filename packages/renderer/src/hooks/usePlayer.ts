@@ -11,6 +11,7 @@ import {
   fanOutLike,
   detectLiked,
   dislike,
+  dislikeMerged,
   pickPlayableTrack,
   API_ORIGIN,
 } from '../api';
@@ -507,6 +508,25 @@ export function usePlayer(audioRef: RefObject<HTMLAudioElement | null>) {
 
   const handleDislike = async () => {
     if (!track || !provider) return;
+    // Unified search path: 踩 = 取消这首歌在所有平台的红心 + 标记不喜欢，
+    // 否则某平台残留的红心会在下次切到这首歌时被 detect 重新点亮/收藏回来。
+    const q = queueRef.current;
+    const current = q?.unifiedItems?.[q.idx];
+    if (current && current.bestSource) {
+      const sources = current.sources
+        .filter((s) => s.hasCopyright)
+        .map((s) => ({ platform: s.platform, trackId: s.trackId }));
+      try {
+        await dislikeMerged(current.id, sources);
+        setFanOutCount(0);
+        setTrack((prev) => (prev ? { ...prev, liked: false } : prev));
+      } catch {
+        // 踩失败不阻塞切歌，静默。
+      }
+      loadNextTrack();
+      return;
+    }
+    // Single-platform path (radio): 单平台标记不喜欢。
     await dislike(provider, track.id);
     loadNextTrack();
   };

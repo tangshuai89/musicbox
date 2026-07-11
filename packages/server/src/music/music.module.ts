@@ -7,6 +7,7 @@ import { DeezerMusicProvider } from './deezer.provider';
 import { SpotifyMusicProvider } from './spotify.provider';
 import { CommonModule } from '../common/common.module';
 import { MatchService } from '../match/match.service';
+import { LikeSyncQueue } from './like-sync.queue';
 
 @Module({
   imports: [CommonModule],
@@ -14,6 +15,7 @@ import { MatchService } from '../match/match.service';
   providers: [
     MusicService,
     MatchService,
+    LikeSyncQueue,
     QqMusicProvider,
     NeteaseMusicProvider,
     DeezerMusicProvider,

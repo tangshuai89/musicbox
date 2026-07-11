@@ -170,7 +170,51 @@ async function main() {
       console.log('✅ 8. searchUnified 空 q → 400（NaN page 清洗见单测）');
     }
 
-    console.log('\n🎉 like.e2e 全部 8 项通过');
+    // ── 9. 路由顺序：/dislike/merged 命中 dislikeMerged ──────────
+    // 先 fan-out like 一个新 mergedId，再 dislike/merged 把它踩掉。
+    {
+      await call('POST', '/music/like/merged', {
+        mergedId: 'merged-dislike-001',
+        sources: [
+          { platform: 'qq', trackId: 'dq1' },
+          { platform: 'deezer', trackId: 'dd1' },
+        ],
+        liked: true,
+      });
+      const r = await call('POST', '/music/dislike/merged', {
+        mergedId: 'merged-dislike-001',
+        sources: [
+          { platform: 'qq', trackId: 'dq1' },
+          { platform: 'deezer', trackId: 'dd1' },
+        ],
+      });
+      assert.strictEqual(r.status, 201, `dislike/merged 期望 201，实际 ${r.status}`);
+      assert.ok(
+        r.json && (r.json as { success?: boolean }).success === true,
+        'dislike/merged 应返回 { success: true }（命中 dislikeMerged，非 :trackId 截胡）',
+      );
+      console.log('✅ 9. /dislike/merged 命中 dislikeMerged（路由顺序正确）');
+    }
+
+    // ── 10. 踩 → 跨平台红心被取消（liked 清空） ────────────────
+    {
+      const qq = await call('GET', '/music/liked?provider=qq');
+      const de = await call('GET', '/music/liked?provider=deezer');
+      assert.strictEqual((qq.json as unknown[]).length, 0, '踩后 qq liked 应清空');
+      assert.strictEqual((de.json as unknown[]).length, 0, '踩后 deezer liked 应清空');
+      console.log('✅ 10. 踩 → 跨平台红心取消（liked 清空）');
+    }
+
+    // ── 11. 输入校验：dislike/merged 缺 mergedId → 400 ─────────
+    {
+      const r = await call('POST', '/music/dislike/merged', {
+        sources: [{ platform: 'qq', trackId: 'x' }],
+      });
+      assert.strictEqual(r.status, 400, 'dislike/merged 缺 mergedId 应 400');
+      console.log('✅ 11. dislike/merged 缺 mergedId → 400');
+    }
+
+    console.log('\n🎉 like.e2e 全部 11 项通过');
   } finally {
     await app.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });

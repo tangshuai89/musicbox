@@ -174,6 +174,24 @@ export async function dislike(
   );
 }
 
+/**
+ * 统一 track 的「踩」：取消这首歌在所有 fan-out 平台的红心（真正从各平台收藏
+ * 移除）+ 标记不喜欢。用于统一搜索队列里的歌——单平台电台仍走 dislike()。
+ */
+export async function dislikeMerged(
+  mergedId: string,
+  sources: Array<{ platform: MusicProvider; trackId: string }>,
+): Promise<{ success: boolean }> {
+  return json(
+    await fetch(`${API_BASE}/music/dislike/merged`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mergedId, sources }),
+    }),
+  );
+}
+
 export async function getLiked(provider: MusicProvider): Promise<Track[]> {
   return json<Track[]>(
     await fetch(`${API_BASE}/music/liked?provider=${provider}`, {

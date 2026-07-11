@@ -208,6 +208,49 @@ export class MusicController {
     );
   }
 
+  /**
+   * 统一 track 的「踩」：取消这首歌在所有 fan-out 平台的红心 + 标记不喜欢。
+   *
+   * 请求体: { mergedId, sources: [{platform, trackId}] }
+   * 响应: { success }
+   *
+   * ⚠️ 同 like/merged：必须注册在 /dislike/:trackId 之前，否则会被
+   * "dislike/:trackId"（trackId='merged'）截胡，走到单平台 markDisliked。
+   */
+  @Post('dislike/merged')
+  async dislikeMerged(
+    @Body() body: {
+      mergedId?: string;
+      sources?: Array<{ platform: string; trackId: string }>;
+    },
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ success: boolean }> {
+    if (!body?.mergedId || typeof body.mergedId !== 'string') {
+      throw new BadRequestException('mergedId 必填');
+    }
+    if (!Array.isArray(body.sources) || body.sources.length === 0) {
+      throw new BadRequestException('sources 至少 1 项');
+    }
+    const sources: Array<{ platform: MusicProvider; trackId: string }> = [];
+    for (const s of body.sources) {
+      if (
+        !s ||
+        typeof s.platform !== 'string' ||
+        typeof s.trackId !== 'string' ||
+        !s.trackId.length
+      ) {
+        throw new BadRequestException('sources 每项需要 platform + trackId');
+      }
+      sources.push({
+        platform: normalizeProvider(s.platform),
+        trackId: s.trackId,
+      });
+    }
+    const session = this.sessionService.resolve(req, res);
+    return this.musicService.dislikeMerged(session, body.mergedId, sources);
+  }
+
   @Post('dislike/:trackId')
   async dislike(
     @Param('trackId') trackId: string,
