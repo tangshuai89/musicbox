@@ -19,6 +19,15 @@
 - [x] 12. 新增 `netease.fmTrash` = `radio/trash/add`（踩/不喜欢）
 - [x] 13. `markDisliked` 改用 `fmTrash`
 
+## Deezer 结构性排除（高危 #4：匿名源污染本地红心）
+- [x] D1. `isLikeable(provider)`：`!ANONYMOUS_PROVIDERS.has(provider)`
+- [x] D2. `setLike` 守卫：非 likeable → no-op（bulletproof，任何路径误传都不落地）
+- [x] D3. `toggleLike` 对非 likeable 早退 no-op（Deezer 电台点 ❤ 不点亮/不入队）
+- [x] D4. `fanOutLike` 循环跳过非 likeable；构建 current 时过滤历史 Deezer
+- [x] D5. `canSyncLike` 显式先过 `isLikeable`
+- [x] D6. `loadState`：清掉历史污染的 Deezer `liked` + 过滤 `fanOut` 里的 Deezer
+- [x] D7. like.e2e：1–4 改用 qq/netease/spotify；新增 4b 断言 Deezer 不计账（共 12 项）
+
 ## 踩 = 取消跨平台红心
 - [x] 14. `MusicService.dislikeMerged`：fanOutLike(false) 取消红心 + disliked 标记 + fmTrash
 - [x] 15. `POST /music/dislike/merged`（注册在 `/dislike/:trackId` 之前）+ 入参校验
