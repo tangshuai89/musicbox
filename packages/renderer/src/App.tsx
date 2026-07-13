@@ -159,6 +159,7 @@ export default function App() {
         hasTrack={!!player.track}
         loading={player.loading}
         playing={player.playing}
+        liked={player.track?.liked ?? false}
         fanOutCount={player.fanOutCount}
         onDislike={() => void player.handleDislike()}
         onLike={() => void player.handleLike()}

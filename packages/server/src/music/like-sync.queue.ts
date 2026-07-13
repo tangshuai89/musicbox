@@ -58,6 +58,9 @@ export class LikeSyncQueue {
   private readonly logger = new Logger(LikeSyncQueue.name);
   /** key(`${sessionId}:${mergedId}`) → 待消费任务（同 key 合并）。 */
   private readonly pending = new Map<string, LikeSyncTask>();
+  /** 正在消费中的任务（已从 pending 移除但还没写完）——pendingTargets 要把它
+   *  也算作在途，否则对账会把正在写的乐观本地态误判为失配。 */
+  private active: LikeSyncTask | null = null;
   private draining = false;
   private processor?: LikeSyncProcessor;
 
@@ -67,6 +70,29 @@ export class LikeSyncQueue {
 
   registerProcessor(fn: LikeSyncProcessor): void {
     this.processor = fn;
+  }
+
+  /**
+   * 某 session 当前在途（待消费 + 消费中）的同步目标。供对账用：远端
+   * 刷新时，在途的乐观写还没落到远端，不能被当作失配抹掉。
+   */
+  pendingTargets(
+    sessionId: string,
+  ): Array<{ platform: MusicProvider; trackId: string; liked: boolean }> {
+    const out: Array<{
+      platform: MusicProvider;
+      trackId: string;
+      liked: boolean;
+    }> = [];
+    const collect = (task: LikeSyncTask) => {
+      if (task.session.id !== sessionId) return;
+      for (const t of task.targets) {
+        out.push({ platform: t.platform, trackId: t.trackId, liked: task.liked });
+      }
+    };
+    if (this.active) collect(this.active);
+    for (const task of this.pending.values()) collect(task);
+    return out;
   }
 
   private key(task: LikeSyncTask): string {
@@ -123,7 +149,12 @@ export class LikeSyncQueue {
         if (key === undefined) break;
         const task = this.pending.get(key)!;
         this.pending.delete(key);
-        await this.runTask(task);
+        this.active = task;
+        try {
+          await this.runTask(task);
+        } finally {
+          this.active = null;
+        }
       }
     } finally {
       this.draining = false;

@@ -39,10 +39,20 @@
 - [x] F1. [#7] `loadNextTrack` radio 分支 `setFanOutCount(0)`（切回电台清角标）
 - [x] F2. [#10] `detectLikedAndSync` 写 fanOut 记录改「合并旧记录」而非覆盖
 - [x] F3. [#9] `primeLikedCache` + importLiked 三平台拉完顺手暖 `likedCache`
-- [ ] F4. [#5/#6/#8] 明确不做（见 spec「后续修订」——需产品决策再动）
+- [x] F4. [#5/#6/#8] 产品决策后补齐（heart-followups 二期）：
+  - [x] F4a. [#5] `reconcileLiked`：远端新鲜全量（getLikedSet miss 重拉 / primeLikedCache）
+        后收敛本地 liked = 远端 ∪ 队列在途 like − 在途 unlike；顺带收敛 fanOut 条目；
+        `LikeSyncQueue.pendingTargets` 暴露在途目标（含消费中的 active 任务）
+  - [x] F4b. [#6] fanOut 记录升级为 `{platform, trackId?}[]`（老格式 coerce）+
+        `canonicalMergedId` 按 (platform, trackId) 重合归一漂移的 mergedId；
+        unlike 优先用记录里存的代表 trackId
+  - [x] F4c. [#8] ❤ 改开关语义：unified 已红心再点走 `fanOutLike(false)`（不写
+        disliked / 不 fmTrash / 不切歌），单平台走 toggleLike 翻转；TransportBar
+        按 liked 实心/描边 + title 提示
+  - [x] F4d. like.e2e 补 mergedId 漂移归一断言（新 mergedId + 重合 source 复用旧记录）
 
 ## 验证
 - [x] 18. `npm run typecheck` 三包全过
-- [x] 19. `npm test`：like.e2e 12 项（+ dislike/merged 路由/取消/校验 + Deezer 排除），全绿
+- [x] 19. `npm test`：like.e2e 13 项（+ dislike/merged 路由/取消/校验 + Deezer 排除 + 漂移归一），全绿
 - [x] 20. `npm run lint`（renderer）通过
 - [x] 21. `search-unified.e2e` 手工构造 `MusicService` 补第 7 个参数（likeSync stub）

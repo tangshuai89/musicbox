@@ -181,10 +181,20 @@ interface LikeSyncTask {
   `likedCache`，紧接着的切歌 detect 不必把 QQ 1000+ 首再重拉一遍（此前两条路径
   各拉各的）。
 
-仍**不做**（既有限制 / 设计如此，需产品决策再动）：
+产品决策后补齐（heart-followups 二期）：
 
-- **[#5] 两套真值源不主动对账**：`state.providers[].liked`（本地）与 `likedCache`
-  （远端派生）并存；队列重试已大幅收窄失配窗口，全量 reconcile 收益低、风险高。
-- **[#6] mergedId 跨次搜索漂移**：同 [不做什么] 所述，属版本拆分搜索的固有特性。
-- **[#8] 无「取消红心」正常入口**：手动 ❤ 是「只加不减」的设计；移除意图统一走
-  「踩」（dislikeMerged）。如需独立的取消红心按钮，属产品决策。
+- **[#5] 两套真值源主动对账**：每次拿到一份**新鲜的**远端红心全量
+  （getLikedSet 缓存 miss 重拉 / importLiked prime）后，`reconcileLiked` 把本地
+  `providers[p].liked` 收敛到「远端 ∪ 同步队列在途 like − 在途 unlike」；
+  远端拉取失败保留本地状态（绝不误清），未登录 / Deezer 不参与。顺带把
+  fanOut 记录里该平台已不再红心的条目移除（外部在官方 App 取消 → 角标收敛）。
+- **[#6] mergedId 跨次搜索漂移归一**：fanOut 记录升级为
+  `Record<mergedId, Array<{platform, trackId?}>>`（老格式纯平台名数组在 loadState
+  时 coerce）。新来的 (mergedId, sources) 若与某条已有记录的任一
+  (platform, trackId) 重合，就复用那条记录的 key（canonicalMergedId）——同一首歌
+  不会因主平台切换/平台缺席分裂成两条记录；unlike 优先用记录里存的代表
+  trackId（本次 sources 缺某平台也能取消到位）。
+- **[#8] 取消红心正常入口**：手动 ❤ 改为开关语义。已红心时再点 ❤：统一搜索
+  路径走 `fanOutLike(liked=false)`（只取消之前 fan-out 过的平台，**不写
+  disliked、不碰 fmTrash、不切歌**——那些仍是「踩」的语义）；单平台电台路径走
+  toggleLike 翻转。TransportBar 的 ❤ 按 `track.liked` 实心/描边，title 提示可取消。
