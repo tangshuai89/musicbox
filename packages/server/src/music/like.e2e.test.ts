@@ -245,7 +245,52 @@ async function main() {
       console.log('✅ 11. dislike/merged 缺 mergedId → 400');
     }
 
-    console.log('\n🎉 like.e2e 全部 12 项通过');
+    // ── 12. mergedId 漂移归一（#6）：新 mergedId + 重合 source 复用旧记录 ──
+    {
+      // 先用 mergedId A 心动 qq:drift-q1 + netease:drift-n1。
+      await call('POST', '/music/like/merged', {
+        mergedId: 'merged-qq-drift-A',
+        sources: [
+          { platform: 'qq', trackId: 'drift-q1' },
+          { platform: 'netease', trackId: 'drift-n1' },
+        ],
+        liked: true,
+      });
+      // 模拟漂移：下次搜索同一首歌拿到不同 mergedId（主平台换成 netease），
+      // 且 qq 缺席——但 netease trackId 与旧记录重合 → 应归一到旧记录。
+      const r = await call('POST', '/music/like/merged', {
+        mergedId: 'merged-netease-drift-B',
+        sources: [{ platform: 'netease', trackId: 'drift-n1' }],
+        liked: true,
+      });
+      assert.deepStrictEqual(
+        (r.json as { fannedOutTo: string[] }).fannedOutTo.sort(),
+        ['netease', 'qq'],
+        '漂移的 mergedId 应归一到旧记录，fannedOutTo 含 qq + netease',
+      );
+      // 用漂移后的 mergedId unlike——即使本次 sources 缺 qq，也应按记录里存的
+      // 代表 trackId 把 qq 一并取消。
+      await call('POST', '/music/like/merged', {
+        mergedId: 'merged-netease-drift-B',
+        sources: [{ platform: 'netease', trackId: 'drift-n1' }],
+        liked: false,
+      });
+      const qq = await call('GET', '/music/liked?provider=qq');
+      const ne = await call('GET', '/music/liked?provider=netease');
+      assert.strictEqual(
+        (qq.json as unknown[]).length,
+        0,
+        '漂移 unlike 后 qq liked 应清空（用记录里的代表 trackId 定位）',
+      );
+      assert.strictEqual(
+        (ne.json as unknown[]).length,
+        0,
+        '漂移 unlike 后 netease liked 应清空',
+      );
+      console.log('✅ 12. mergedId 漂移归一（#6）：重合 source 复用旧记录 + 跨漂移 unlike');
+    }
+
+    console.log('\n🎉 like.e2e 全部 13 项通过');
   } finally {
     await app.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });

@@ -63,8 +63,16 @@ interface ProviderState {
  *  心过的同一首歌。 */
 export interface MusicSessionState {
   providers: Record<MusicProvider, ProviderState>;
-  /** mergedId → 在哪些平台心动了。空对象 = 没有任何 fan-out 记录。 */
-  fanOut: Record<string, MusicProvider[]>;
+  /** mergedId → 在哪些平台心动了（含每平台的代表 trackId，用于 mergedId
+   *  漂移时按曲目重合归一 + unlike 时兜底定位）。空对象 = 无 fan-out 记录。
+   *  老格式（纯平台名数组）在 loadState 时被 coerce 成 trackId 缺省的条目。 */
+  fanOut: Record<string, FanOutEntry[]>;
+}
+
+/** fanOut 记录里的单个平台条目。trackId 可能缺省（老格式迁移而来）。 */
+export interface FanOutEntry {
+  platform: MusicProvider;
+  trackId?: string;
 }
 
 /** Some providers (Deezer) work without any auth — they don't need a
@@ -110,7 +118,7 @@ export class MusicService {
       deezer: fresh(),
       spotify: fresh(),
     };
-    const fanOut: Record<string, MusicProvider[]> = {};
+    const fanOut: Record<string, FanOutEntry[]> = {};
 
     const persisted = this.storage.get<Record<string, unknown>>(
       this.stateKey(session.id),
@@ -141,14 +149,30 @@ export class MusicService {
       // fanOut 是新加的，老持久化文件没这个字段是正常的。
       const rawFanOut = (persisted as { fanOut?: unknown }).fanOut;
       if (rawFanOut && typeof rawFanOut === 'object') {
+        const isLikeableName = (p: unknown): p is MusicProvider =>
+          // deezer 不再参与红心记账：过滤掉历史污染进 fanOut 的 deezer。
+          p === 'qq' || p === 'netease' || p === 'spotify';
         for (const [k, v] of Object.entries(rawFanOut)) {
-          if (Array.isArray(v)) {
-            fanOut[k] = v.filter(
-              (p): p is MusicProvider =>
-                // deezer 不再参与红心记账：过滤掉历史污染进 fanOut 的 deezer。
-                p === 'qq' || p === 'netease' || p === 'spotify',
-            );
+          if (!Array.isArray(v)) continue;
+          const entries: FanOutEntry[] = [];
+          for (const item of v) {
+            // 老格式：平台名字符串；新格式：{platform, trackId}。
+            if (isLikeableName(item)) {
+              entries.push({ platform: item });
+            } else if (
+              item &&
+              typeof item === 'object' &&
+              isLikeableName((item as FanOutEntry).platform)
+            ) {
+              const e = item as FanOutEntry;
+              entries.push({
+                platform: e.platform,
+                trackId:
+                  typeof e.trackId === 'string' ? e.trackId : undefined,
+              });
+            }
           }
+          if (entries.length) fanOut[k] = entries;
         }
       }
     }
@@ -163,8 +187,10 @@ export class MusicService {
     //     改过 state.json，或者 unified-search mergedId 重建后变孤儿）
     //  2) LRU 上限：超过 FANOUT_MAX 就按插入顺序淘汰最早的
     // （unified track 是按"被心动"的顺序写入的，对应 Object 插入顺序）
-    for (const [mergedId, platforms] of Object.entries(fanOut)) {
-      const stillLiked = platforms.some((p) => providers[p].liked.size > 0);
+    for (const [mergedId, entries] of Object.entries(fanOut)) {
+      const stillLiked = entries.some(
+        (e) => providers[e.platform].liked.size > 0,
+      );
       // 粗粒度判断：只要该平台有任意 liked 就算 mergedId 仍可能有效。
       // 实际"哪首歌在哪个平台 liked"是精确匹配；这里做廉价启发式，
       // 误删概率低（删了用户重新 heart 即可）。
@@ -803,6 +829,50 @@ export class MusicService {
       set: new Set(trackIds),
       at: Date.now(),
     });
+    this.reconcileLiked(session, provider, new Set(trackIds));
+  }
+
+  /**
+   * 两套真值源主动对账（#5）：拿到一份**新鲜的**远端红心全量后，把本地
+   * `providers[p].liked` 收敛到「远端 ∪ 同步队列在途的 like − 在途的 unlike」。
+   * 远端是权威；在途的乐观写还没落到远端，不能被当作失配抹掉。
+   * 只在远端拉取**成功**时调用（失败保留本地状态，绝不误清）；未登录 /
+   * Deezer 永远不会走到这里。顺带把 fanOut 记录里该平台已不再红心的条目
+   * 移除（外部在官方 App 取消了收藏 → 角标不再多算）。
+   */
+  private reconcileLiked(
+    session: Session,
+    provider: MusicProvider,
+    remote: Set<string>,
+  ): void {
+    if (!this.isLikeable(provider)) return;
+    const state = this.loadState(session);
+    const local = state.providers[provider].liked;
+
+    const next = new Set(remote);
+    for (const t of this.likeSync.pendingTargets(session.id)) {
+      if (t.platform !== provider) continue;
+      if (t.liked) next.add(t.trackId);
+      else next.delete(t.trackId);
+    }
+
+    const unchanged =
+      next.size === local.size && [...next].every((id) => local.has(id));
+    if (unchanged) return;
+
+    state.providers[provider].liked = next;
+    for (const [mergedId, entries] of Object.entries(state.fanOut)) {
+      const kept = entries.filter(
+        (e) => e.platform !== provider || !e.trackId || next.has(e.trackId),
+      );
+      if (kept.length === entries.length) continue;
+      if (kept.length) state.fanOut[mergedId] = kept;
+      else delete state.fanOut[mergedId];
+    }
+    this.saveState(session, state);
+    this.logger.log(
+      `reconciled ${provider} liked: local ${local.size} → ${next.size}`,
+    );
   }
 
   /**
@@ -835,7 +905,10 @@ export class MusicService {
         `getLikedSet(${provider}) failed: ${(err as Error).message}`,
       );
     }
-    if (set) this.likedCache.set(key, { set, at: Date.now() });
+    if (set) {
+      this.likedCache.set(key, { set, at: Date.now() });
+      this.reconcileLiked(session, provider, set);
+    }
     return set;
   }
 
@@ -846,6 +919,52 @@ export class MusicService {
   ): Promise<boolean> {
     const set = await this.getLikedSet(session, provider);
     return set?.has(trackId) ?? false;
+  }
+
+  /**
+   * mergedId 漂移归一（#6）：mergedId 是“时长聚类 + 平台优先级”派生的，不同次
+   * 搜索可能不同（某平台超时缺席 / 变体聚类不同 → main 换了）。fanOut 记录
+   * 里存有每平台的代表 trackId：新来的 (mergedId, sources) 若与某条已有记录的
+   * 任一 (platform, trackId) 重合，就认定是同一首歌，复用那条记录的 key——
+   * 避免同一首歌在不同 mergedId 下分裂成两条记录（角标乱 / 踩了又复活）。
+   * 无重合则原样返回。扫全表是 O(记录数×条目)，上限 FANOUT_MAX，纯内存可接受。
+   */
+  private canonicalMergedId(
+    state: MusicSessionState,
+    mergedId: string,
+    sources: Array<{ platform: MusicProvider; trackId: string }>,
+  ): string {
+    if (state.fanOut[mergedId]) return mergedId;
+    const wanted = new Set(sources.map((s) => `${s.platform}:${s.trackId}`));
+    for (const [key, entries] of Object.entries(state.fanOut)) {
+      if (
+        entries.some(
+          (e) => e.trackId && wanted.has(`${e.platform}:${e.trackId}`),
+        )
+      ) {
+        return key;
+      }
+    }
+    return mergedId;
+  }
+
+  /** 把新的 (platform, repId) 合并进 fanOut 条目列表：按平台去重，新 trackId
+   *  补全老格式缺省的条目；只留 likeable 平台。 */
+  private mergeFanOutEntries(
+    prev: FanOutEntry[],
+    next: FanOutEntry[],
+  ): FanOutEntry[] {
+    const byPlatform = new Map<MusicProvider, FanOutEntry>();
+    for (const e of [...prev, ...next]) {
+      if (!this.isLikeable(e.platform)) continue;
+      const existing = byPlatform.get(e.platform);
+      if (!existing) {
+        byPlatform.set(e.platform, { ...e });
+      } else if (!existing.trackId && e.trackId) {
+        existing.trackId = e.trackId;
+      }
+    }
+    return [...byPlatform.values()];
   }
 
   /**
@@ -901,7 +1020,9 @@ export class MusicService {
 
     const anyLiked = perPlatform.some((p) => p.liked);
     if (!anyLiked) {
-      // 没有任何平台红心 → 只读检测，什么都不写。
+      // 没有任何平台红心 → 只读检测，什么都不写。但如果这首歌有 fan-out
+      // 记录（可能挂在漂移前的老 mergedId 下），说明它曾被心过但远端已被
+      // 对账/取消——不在这里清理（交给 loadState 的 GC 启发式）。
       return { liked: false, fannedOutTo: [] };
     }
 
@@ -910,15 +1031,17 @@ export class MusicService {
     //  - 还没红心但能写的平台：乐观点亮本地 + 入队（每平台一首）后台补；
     //  - 不能写红心的平台（deezer/未登录）：既不入队也不计角标。
     const state = this.loadState(session);
-    const fannedOutTo: MusicProvider[] = [];
+    // mergedId 漂移归一（#6）：若同一首歌已挂在老 key 下，复用老 key。
+    const canonicalId = this.canonicalMergedId(state, mergedId, sources);
+    const fresh: FanOutEntry[] = [];
     const targets: Array<{ platform: MusicProvider; trackId: string }> = [];
     for (const p of perPlatform) {
       if (p.liked) {
         this.setLike(state, p.platform, p.repId, true);
-        fannedOutTo.push(p.platform);
+        fresh.push({ platform: p.platform, trackId: p.repId });
       } else if (p.canSync) {
         this.setLike(state, p.platform, p.repId, true); // 乐观点亮
-        fannedOutTo.push(p.platform);
+        fresh.push({ platform: p.platform, trackId: p.repId });
         targets.push({ platform: p.platform, trackId: p.repId });
       }
     }
@@ -926,18 +1049,18 @@ export class MusicService {
     // （平台超时缺席 / 变体聚类不同），但那首歌在该平台仍是红心的——直接覆盖
     // 会把它从记录里抹掉、角标少算。合并保留旧平台（dislikeMerged 已 delete
     // 整条记录，所以这里不会复活被取消的红心）。只留 likeable 平台。
-    const prev = (state.fanOut[mergedId] ?? []).filter((p) =>
-      this.isLikeable(p),
+    const merged = this.mergeFanOutEntries(
+      state.fanOut[canonicalId] ?? [],
+      fresh,
     );
-    const merged = [...new Set([...prev, ...fannedOutTo])];
-    state.fanOut[mergedId] = merged;
+    state.fanOut[canonicalId] = merged;
     this.saveState(session, state);
 
     // 关键改动：远端写不再在切歌时内联执行，而是推入同步队列（MQ 思路）——
     // 每平台一首、失败自动重试、不阻塞播放。检测→入队→后台同步解耦。
-    this.enqueueLikeSync(session, mergedId, true, targets);
+    this.enqueueLikeSync(session, canonicalId, true, targets);
 
-    return { liked: true, fannedOutTo: merged };
+    return { liked: true, fannedOutTo: merged.map((e) => e.platform) };
   }
 
   async toggleLike(
@@ -996,47 +1119,56 @@ export class MusicService {
     fannedOutTo: MusicProvider[];
   }> {
     const state = this.loadState(session);
+    // mergedId 漂移归一（#6）：若同一首歌已挂在老 key 下，复用老 key——
+    // 保证“同一首歌只有一条 fan-out 记录”，unlike/踩能找到完整平台列表。
+    const canonicalId = this.canonicalMergedId(state, mergedId, sources);
     /** 本次要推入同步队列的远端目标（每平台一首）。 */
     const targets: Array<{ platform: MusicProvider; trackId: string }> = [];
 
     if (liked) {
-      // 当前 mergedId 已心动的平台（保持）。这次 sources 里没列的旧
-      // 平台也保留——避免"老 fan-out 记录被覆盖"丢状态。顺带过滤掉历史
-      // 污染进来的 deezer（老实现曾把它写进 fanOut）。
-      const current = new Set(
-        (state.fanOut[mergedId] ?? []).filter((p) => this.isLikeable(p)),
-      );
       // **每个平台只收藏一首**：统一搜索会把同名的一堆变体塞进同一 item 的
       // sources（无时长门槛），遍历全部会把十几个变体全收藏。按平台取第一首。
+      const fresh: FanOutEntry[] = [];
       const byPlatform = this.groupByPlatform(sources);
       for (const [platform, trackIds] of byPlatform) {
         // Deezer 匿名无收藏概念 → 不记账、不计角标、不入队。
         if (!this.isLikeable(platform)) continue;
         const trackId = trackIds[0];
-        current.add(platform);
+        fresh.push({ platform, trackId });
         // setLike 是幂等的：已心动的不会被翻回 unlike（本地即时可见）。
         this.setLike(state, platform, trackId, true);
         targets.push({ platform, trackId });
       }
-      state.fanOut[mergedId] = [...current];
+      // 与已有记录合并：这次 sources 里没列的旧平台也保留——避免“老
+      // fan-out 记录被覆盖”丢状态；历史污染的 deezer 在合并时被过滤。
+      state.fanOut[canonicalId] = this.mergeFanOutEntries(
+        state.fanOut[canonicalId] ?? [],
+        fresh,
+      );
     } else {
-      // 取消心动：按之前 fanOut 记录的平台列表 unlike（幂等）。
-      const toUnlike = state.fanOut[mergedId] ?? [];
-      for (const platform of toUnlike) {
-        if (!this.isLikeable(platform)) continue; // 跳过历史 deezer 记录
-        const src = sources.find((s) => s.platform === platform);
-        if (!src) continue;
-        this.setLike(state, platform, src.trackId, false);
-        targets.push({ platform, trackId: src.trackId });
+      // 取消心动：按之前 fanOut 记录的平台列表 unlike（幂等）。定位 trackId
+      // 优先用记录里存的代表 trackId（漂移后本次 sources 可能缺某平台），
+      // 没有再兜底用本次 sources 里同平台的第一首。
+      const toUnlike = state.fanOut[canonicalId] ?? [];
+      for (const entry of toUnlike) {
+        if (!this.isLikeable(entry.platform)) continue; // 跳过历史 deezer 记录
+        const trackId =
+          entry.trackId ??
+          sources.find((s) => s.platform === entry.platform)?.trackId;
+        if (!trackId) continue;
+        this.setLike(state, entry.platform, trackId, false);
+        targets.push({ platform: entry.platform, trackId });
       }
-      delete state.fanOut[mergedId];
+      delete state.fanOut[canonicalId];
     }
 
     this.saveState(session, state);
     // 远端写走同步队列：合并去重、每平台一首、失败重试，不阻塞本次响应。
-    this.enqueueLikeSync(session, mergedId, liked, targets);
+    this.enqueueLikeSync(session, canonicalId, liked, targets);
     // 返回"全集"——liked=true 时就是当前 fan-out 列表；liked=false 时空数组
-    const fannedOutTo = liked ? state.fanOut[mergedId] ?? [] : [];
+    const fannedOutTo = liked
+      ? (state.fanOut[canonicalId] ?? []).map((e) => e.platform)
+      : [];
     return { success: true, liked, fannedOutTo };
   }
 

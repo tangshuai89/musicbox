@@ -484,26 +484,26 @@ export function usePlayer(audioRef: RefObject<HTMLAudioElement | null>) {
 
   const handleLike = async () => {
     if (!track || !provider) return;
-    // 语义：只加不减。点 ❤ = 确保这首歌在所有有版权的平台都收藏；已收藏的
-    // 保持不动，永远不会取消。
-    // Unified search path: fan out ❤ to every hasCopyright platform.
+    // 语义：❤ 是开关。未收藏 → 在所有有版权的平台收藏（fan-out）；已收藏 →
+    // 取消之前 fan-out 过的所有平台的收藏（不写「不喜欢」、不影响 FM 推荐——
+    // 那是「踩」的语义）。
     const q = queueRef.current;
     const current = q?.unifiedItems?.[q.idx];
     if (current && current.bestSource) {
       const sources = current.sources
         .filter((s) => s.hasCopyright)
         .map((s) => ({ platform: s.platform, trackId: s.trackId }));
+      const next = !track.liked;
       try {
-        const result = await fanOutLike(current.id, sources, true); // 只加
-        setFanOutCount(result.fannedOutTo.length);
-        setTrack((prev) => (prev ? { ...prev, liked: true } : prev));
+        const result = await fanOutLike(current.id, sources, next);
+        setFanOutCount(next ? result.fannedOutTo.length : 0);
+        setTrack((prev) => (prev ? { ...prev, liked: next } : prev));
       } catch (e) {
         setError(`心动作业失败：${(e as Error).message}`);
       }
       return;
     }
-    // Single-platform path (radio): 已 ❤ 就不动（只加不减）。
-    if (track.liked) return;
+    // Single-platform path (radio): toggleLike 本身就是翻转语义。
     const result = await toggleLike(provider, track.id);
     if (result.success) {
       setTrack((prev) => (prev ? { ...prev, liked: result.liked } : prev));
