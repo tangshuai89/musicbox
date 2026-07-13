@@ -145,11 +145,17 @@ export class MusicService {
           if (Array.isArray(v)) {
             fanOut[k] = v.filter(
               (p): p is MusicProvider =>
-                p === 'qq' || p === 'netease' || p === 'deezer' || p === 'spotify',
+                // deezer 不再参与红心记账：过滤掉历史污染进 fanOut 的 deezer。
+                p === 'qq' || p === 'netease' || p === 'spotify',
             );
           }
         }
       }
+    }
+    // 匿名源（deezer）无收藏概念：清掉历史 bug 污染进 liked 的记录，
+    // 否则 deezer 电台会显示假红心、角标虚高。disliked 是合法的（电台过滤用），保留。
+    for (const p of ANONYMOUS_PROVIDERS) {
+      providers[p].liked.clear();
     }
     // fanOut GC：
     //  1) orphan：mergedId 对应的所有 platform 都没在 liked 集合里 → 删
@@ -632,6 +638,18 @@ export class MusicService {
   }
 
   /**
+   * 该平台是否有「收藏 / 红心」概念。Deezer 是匿名源、没有 per-user library
+   * （importLiked 也把它标记为 anonymous_no_user_likes），所以它**永不参与红心
+   * 记账**：本地 liked 集合、fanOut 记录、角标数、远端同步队列一律跳过。
+   *
+   * 未登录的 likeable 平台（QQ/网易云/Spotify）不在此列——它们仍会记本地「意图」，
+   * 登录后 detect 会补同步；只有 Deezer 是结构性排除。
+   */
+  private isLikeable(provider: MusicProvider): boolean {
+    return !ANONYMOUS_PROVIDERS.has(provider);
+  }
+
+  /**
    * 在给定 state 上把某平台的 like 状态「设为」目标值（幂等），返回是否
    * 发生了改变。fanOutLike 用它——fan-out 是"确保为目标态"语义，不是翻转：
    * 重复 like 一首已心动的歌不应把它 unlike。
@@ -645,6 +663,9 @@ export class MusicService {
     trackId: string,
     liked: boolean,
   ): boolean {
+    // Deezer 等匿名源无收藏概念：任何写红心都 no-op（bulletproof——无论哪条
+    // 路径误传 deezer，都不会污染本地 liked 集合 / 角标）。
+    if (!this.isLikeable(provider)) return false;
     const psState = state.providers[provider];
     const has = psState.liked.has(trackId);
     if (liked && !has) {
@@ -658,9 +679,10 @@ export class MusicService {
     return false; // 已是目标态，无改变
   }
 
-  /** 某平台当前 session 是否具备写红心的能力（已登录且非匿名）。
+  /** 某平台当前 session 是否具备写红心的能力（有收藏概念 + 已登录）。
    *  Deezer 匿名没有 user 红心概念 → 永远 false，不会入同步队列。 */
   private canSyncLike(session: Session, provider: MusicProvider): boolean {
+    if (!this.isLikeable(provider)) return false;
     const ps = session.providers[provider];
     switch (provider) {
       case 'qq':
@@ -767,6 +789,20 @@ export class MusicService {
     if (!entry) return; // 还没建缓存就不管，下次拉的时候是新鲜的
     if (liked) entry.set.add(trackId);
     else entry.set.delete(trackId);
+  }
+
+  /** 用一份已拉到的红心列表整体填充缓存。importLiked 拉全量收藏时顺手复用，
+   *  避免紧接着的切歌 detect 又把 QQ 1000+ 首重拉一遍（importLiked 与 detect
+   *  之前是各拉各的，互不复用）。 */
+  private primeLikedCache(
+    session: Session,
+    provider: MusicProvider,
+    trackIds: string[],
+  ): void {
+    this.likedCache.set(this.likedCacheKey(session, provider), {
+      set: new Set(trackIds),
+      at: Date.now(),
+    });
   }
 
   /**
@@ -886,15 +922,22 @@ export class MusicService {
         targets.push({ platform: p.platform, trackId: p.repId });
       }
     }
-    const deduped = [...new Set(fannedOutTo)];
-    state.fanOut[mergedId] = deduped;
+    // 与已有 fanOut 记录**合并**而非覆盖：某次搜索可能没返回某平台的 source
+    // （平台超时缺席 / 变体聚类不同），但那首歌在该平台仍是红心的——直接覆盖
+    // 会把它从记录里抹掉、角标少算。合并保留旧平台（dislikeMerged 已 delete
+    // 整条记录，所以这里不会复活被取消的红心）。只留 likeable 平台。
+    const prev = (state.fanOut[mergedId] ?? []).filter((p) =>
+      this.isLikeable(p),
+    );
+    const merged = [...new Set([...prev, ...fannedOutTo])];
+    state.fanOut[mergedId] = merged;
     this.saveState(session, state);
 
     // 关键改动：远端写不再在切歌时内联执行，而是推入同步队列（MQ 思路）——
     // 每平台一首、失败自动重试、不阻塞播放。检测→入队→后台同步解耦。
     this.enqueueLikeSync(session, mergedId, true, targets);
 
-    return { liked: true, fannedOutTo: deduped };
+    return { liked: true, fannedOutTo: merged };
   }
 
   async toggleLike(
@@ -902,6 +945,10 @@ export class MusicService {
     provider: MusicProvider,
     trackId: string,
   ): Promise<{ success: boolean; liked: boolean }> {
+    // Deezer 等匿名源没有收藏概念：点 ❤ 静默 no-op，不写本地、不入队、不点亮。
+    if (!this.isLikeable(provider)) {
+      return { success: true, liked: false };
+    }
     const state = this.loadState(session);
     const wasLiked = this.applyLikeToggle(state, provider, trackId);
     this.saveState(session, state);
@@ -954,12 +1001,17 @@ export class MusicService {
 
     if (liked) {
       // 当前 mergedId 已心动的平台（保持）。这次 sources 里没列的旧
-      // 平台也保留——避免"老 fan-out 记录被覆盖"丢状态。
-      const current = new Set(state.fanOut[mergedId] ?? []);
+      // 平台也保留——避免"老 fan-out 记录被覆盖"丢状态。顺带过滤掉历史
+      // 污染进来的 deezer（老实现曾把它写进 fanOut）。
+      const current = new Set(
+        (state.fanOut[mergedId] ?? []).filter((p) => this.isLikeable(p)),
+      );
       // **每个平台只收藏一首**：统一搜索会把同名的一堆变体塞进同一 item 的
       // sources（无时长门槛），遍历全部会把十几个变体全收藏。按平台取第一首。
       const byPlatform = this.groupByPlatform(sources);
       for (const [platform, trackIds] of byPlatform) {
+        // Deezer 匿名无收藏概念 → 不记账、不计角标、不入队。
+        if (!this.isLikeable(platform)) continue;
         const trackId = trackIds[0];
         current.add(platform);
         // setLike 是幂等的：已心动的不会被翻回 unlike（本地即时可见）。
@@ -971,6 +1023,7 @@ export class MusicService {
       // 取消心动：按之前 fanOut 记录的平台列表 unlike（幂等）。
       const toUnlike = state.fanOut[mergedId] ?? [];
       for (const platform of toUnlike) {
+        if (!this.isLikeable(platform)) continue; // 跳过历史 deezer 记录
         const src = sources.find((s) => s.platform === platform);
         if (!src) continue;
         this.setLike(state, platform, src.trackId, false);
@@ -1038,6 +1091,7 @@ export class MusicService {
         const tracks = await this.netease.fetchLiked(ps, 1000);
         sourceResults.push({ provider: 'netease', count: tracks.length });
         allTracks.push(...tracks);
+        this.primeLikedCache(session, 'netease', tracks.map((t) => t.id));
       }
     } catch (err) {
       this.logger.warn(
@@ -1066,6 +1120,7 @@ export class MusicService {
         const tracks = await this.qq.fetchLiked(ps, 2000);
         sourceResults.push({ provider: 'qq', count: tracks.length });
         allTracks.push(...tracks);
+        this.primeLikedCache(session, 'qq', tracks.map((t) => t.id));
       }
     } catch (err) {
       this.logger.warn(`qq fetchLiked failed: ${(err as Error).message}`);
@@ -1089,6 +1144,7 @@ export class MusicService {
         const tracks = await this.spotify.fetchLiked(ps, 1000);
         sourceResults.push({ provider: 'spotify', count: tracks.length });
         allTracks.push(...tracks);
+        this.primeLikedCache(session, 'spotify', tracks.map((t) => t.id));
       }
     } catch (err) {
       this.logger.warn(

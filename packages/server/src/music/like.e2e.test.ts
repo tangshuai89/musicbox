@@ -60,12 +60,13 @@ async function main() {
     // ── 1. 路由顺序：/like/merged 命中 fanOutLike ──────────────
     // 判定方式：fanOutLike 的响应有 fannedOutTo 字段，toggleLike 没有。
     // 若被 /like/:trackId 截胡（trackId='merged'），响应里只有 {success, liked}。
+    // 用 qq + netease（都是 likeable 平台）——deezer 不参与红心记账，另测。
     {
       const r = await call('POST', '/music/like/merged', {
         mergedId: 'merged-qq-001',
         sources: [
           { platform: 'qq', trackId: 'q1' },
-          { platform: 'deezer', trackId: 'd1' },
+          { platform: 'netease', trackId: 'n1' },
         ],
         liked: true,
       });
@@ -76,8 +77,8 @@ async function main() {
       );
       assert.deepStrictEqual(
         (r.json as { fannedOutTo: string[] }).fannedOutTo.sort(),
-        ['deezer', 'qq'],
-        'fannedOutTo 应含 qq + deezer',
+        ['netease', 'qq'],
+        'fannedOutTo 应含 qq + netease',
       );
       console.log('✅ 1. /like/merged 命中 fanOutLike（路由顺序正确）');
     }
@@ -85,28 +86,28 @@ async function main() {
     // ── 2. fanOut like 后 liked 集合写入 ──────────────────────
     {
       const qq = await call('GET', '/music/liked?provider=qq');
-      const de = await call('GET', '/music/liked?provider=deezer');
+      const ne = await call('GET', '/music/liked?provider=netease');
       assert.strictEqual((qq.json as unknown[]).length, 1, 'qq liked 应有 1 条');
-      assert.strictEqual((de.json as unknown[]).length, 1, 'deezer liked 应有 1 条');
+      assert.strictEqual((ne.json as unknown[]).length, 1, 'netease liked 应有 1 条');
       console.log('✅ 2. fan-out like → 两平台 liked 都写入');
     }
 
-    // ── 3. fannedOutTo 全集：再 like 一次（多带 netease）应返回 3 个 ──
+    // ── 3. fannedOutTo 全集：再 like 一次（多带 spotify）应返回 3 个 ──
     {
       const r = await call('POST', '/music/like/merged', {
         mergedId: 'merged-qq-001',
         sources: [
           { platform: 'qq', trackId: 'q1' }, // 已心过
-          { platform: 'netease', trackId: 'n1' }, // 新增
+          { platform: 'spotify', trackId: 's1' }, // 新增
         ],
         liked: true,
       });
       const fannedOutTo = (r.json as { fannedOutTo: string[] }).fannedOutTo.sort();
-      // 全集应含之前的 deezer + qq，加新的 netease
+      // 全集应含之前的 netease + qq，加新的 spotify
       assert.deepStrictEqual(
         fannedOutTo,
-        ['deezer', 'netease', 'qq'],
-        'fannedOutTo 应是全集（含之前心过的 deezer），不是仅本次 flip',
+        ['netease', 'qq', 'spotify'],
+        'fannedOutTo 应是全集（含之前心过的 netease），不是仅本次 flip',
       );
       console.log('✅ 3. fannedOutTo 返回全集（回归 #6 角标歧义）');
     }
@@ -117,8 +118,8 @@ async function main() {
         mergedId: 'merged-qq-001',
         sources: [
           { platform: 'qq', trackId: 'q1' },
-          { platform: 'deezer', trackId: 'd1' },
           { platform: 'netease', trackId: 'n1' },
+          { platform: 'spotify', trackId: 's1' },
         ],
         liked: false,
       });
@@ -130,6 +131,36 @@ async function main() {
       const qq = await call('GET', '/music/liked?provider=qq');
       assert.strictEqual((qq.json as unknown[]).length, 0, 'unlike 后 qq liked 应清空');
       console.log('✅ 4. fan-out unlike → liked 清空');
+    }
+
+    // ── 4b. Deezer 不参与红心记账（#4 高危：匿名源无收藏概念）──────
+    {
+      const r = await call('POST', '/music/like/merged', {
+        mergedId: 'merged-deezer-x',
+        sources: [
+          { platform: 'qq', trackId: 'qx' },
+          { platform: 'deezer', trackId: 'dx' },
+        ],
+        liked: true,
+      });
+      assert.deepStrictEqual(
+        (r.json as { fannedOutTo: string[] }).fannedOutTo.sort(),
+        ['qq'],
+        'deezer 无收藏概念，不应计入 fannedOutTo（只应有 qq）',
+      );
+      const de = await call('GET', '/music/liked?provider=deezer');
+      assert.strictEqual(
+        (de.json as unknown[]).length,
+        0,
+        'deezer liked 不应被写入（不污染本地集合）',
+      );
+      // 清理：撤掉 qx，避免残留 qq like 影响后续「qq liked 清空」断言。
+      await call('POST', '/music/like/merged', {
+        mergedId: 'merged-deezer-x',
+        sources: [{ platform: 'qq', trackId: 'qx' }],
+        liked: false,
+      });
+      console.log('✅ 4b. Deezer 不参与红心记账（本地不写、角标不计）');
     }
 
     // ── 5. 输入校验：缺 mergedId → 400 ────────────────────────
@@ -214,7 +245,7 @@ async function main() {
       console.log('✅ 11. dislike/merged 缺 mergedId → 400');
     }
 
-    console.log('\n🎉 like.e2e 全部 11 项通过');
+    console.log('\n🎉 like.e2e 全部 12 项通过');
   } finally {
     await app.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });

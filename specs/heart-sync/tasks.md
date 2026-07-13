@@ -19,6 +19,15 @@
 - [x] 12. 新增 `netease.fmTrash` = `radio/trash/add`（踩/不喜欢）
 - [x] 13. `markDisliked` 改用 `fmTrash`
 
+## Deezer 结构性排除（高危 #4：匿名源污染本地红心）
+- [x] D1. `isLikeable(provider)`：`!ANONYMOUS_PROVIDERS.has(provider)`
+- [x] D2. `setLike` 守卫：非 likeable → no-op（bulletproof，任何路径误传都不落地）
+- [x] D3. `toggleLike` 对非 likeable 早退 no-op（Deezer 电台点 ❤ 不点亮/不入队）
+- [x] D4. `fanOutLike` 循环跳过非 likeable；构建 current 时过滤历史 Deezer
+- [x] D5. `canSyncLike` 显式先过 `isLikeable`
+- [x] D6. `loadState`：清掉历史污染的 Deezer `liked` + 过滤 `fanOut` 里的 Deezer
+- [x] D7. like.e2e：1–4 改用 qq/netease/spotify；新增 4b 断言 Deezer 不计账（共 12 项）
+
 ## 踩 = 取消跨平台红心
 - [x] 14. `MusicService.dislikeMerged`：fanOutLike(false) 取消红心 + disliked 标记 + fmTrash
 - [x] 15. `POST /music/dislike/merged`（注册在 `/dislike/:trackId` 之前）+ 入参校验
@@ -26,8 +35,14 @@
 - [x] 17. `usePlayer.handleDislike`：统一队列上下文走 dislikeMerged + 熄灭 ❤/归零角标，
         单平台电台仍走 dislike
 
+## 后续修订（中危收尾 / heart-followups）
+- [x] F1. [#7] `loadNextTrack` radio 分支 `setFanOutCount(0)`（切回电台清角标）
+- [x] F2. [#10] `detectLikedAndSync` 写 fanOut 记录改「合并旧记录」而非覆盖
+- [x] F3. [#9] `primeLikedCache` + importLiked 三平台拉完顺手暖 `likedCache`
+- [ ] F4. [#5/#6/#8] 明确不做（见 spec「后续修订」——需产品决策再动）
+
 ## 验证
 - [x] 18. `npm run typecheck` 三包全过
-- [x] 19. `npm test`：like.e2e 扩到 11 项（+ dislike/merged 路由/取消/校验），全绿
+- [x] 19. `npm test`：like.e2e 12 项（+ dislike/merged 路由/取消/校验 + Deezer 排除），全绿
 - [x] 20. `npm run lint`（renderer）通过
 - [x] 21. `search-unified.e2e` 手工构造 `MusicService` 补第 7 个参数（likeSync stub）

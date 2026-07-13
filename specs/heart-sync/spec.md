@@ -26,7 +26,12 @@
   兜底。
 - **检测只读**：`detectLikedAndSync` 本身不写远端；只有「发现某平台已红心」才入队
   补齐其余平台。
-- **能力门槛**：Deezer 匿名、未登录平台 → 不入队、不计角标（`canSyncLike`）。
+- **Deezer 结构性排除**：Deezer 是匿名源、没有 per-user library（`importLiked` 也
+  标记为 `anonymous_no_user_likes`），因此**永不参与红心记账**——本地 `liked` 集合、
+  `fanOut` 记录、角标数、同步队列一律跳过（`isLikeable`）。点 ❤ 对 Deezer 是静默
+  no-op。历史 bug 污染进 `liked`/`fanOut` 的 Deezer 记录在 `loadState` 时一次性清掉。
+- **未登录 likeable 平台（QQ/网易云/Spotify）**：与 Deezer 不同，仍记本地「意图」，
+  只是当前不入同步队列（`canSyncLike=false`）；登录后 detect 会补同步。
 - **best-effort + 自愈**：远端写失败只告警 + 重试（3 次退避）；本地态乐观更新；
   下次切到这首歌 detect 会重新入队补偿。
 - **收藏是「只加不减」**：手动 ❤ 永远只加不取消（见 heart-fanout）；唯一的移除
@@ -39,7 +44,9 @@
       异步补上红心（「我喜欢的音乐」里出现）
 - [x] 播到一首所有平台都没红心的歌 → 不写任何远端，角标为 0
 - [x] 同一 item 的 sources 里某平台有 20 个变体 → 该平台只同步 1 首（不是 20 首）
-- [x] Deezer / 未登录平台 → 不入队、不计入角标数
+- [x] Deezer 在 fan-out / detect / 单平台 ❤ 里都不写本地 liked、不计入角标（结构性排除）
+- [x] 未登录 likeable 平台 → 记本地意图但暂不入队（登录后 detect 补同步）
+- [x] 老 state.json 里污染的 Deezer liked/fanOut → loadState 时清理，Deezer 电台不再显示假红心
 - [x] 快速连续切歌 → 旧歌的检测结果不会盖掉新歌的 ❤ 态（前端 `activeMergedIdRef` 守卫）
 - [x] 远端同步失败 → 不影响播放，不影响本地点亮；有重试
 
@@ -158,3 +165,26 @@ interface LikeSyncTask {
 - 新端点 `dislike/merged` 放 controller，业务逻辑（取消红心 + 标记 + trash）放 service。
 - 外部调用统一 `fetch`；同步写不套整体超时（best-effort，队列自己控重试节奏）。
 - 网易云 like/unlike 收敛到 `setRadioLike(liked)`；trash 独立为 `fmTrash`。
+
+## 后续修订（中危收尾 / heart-followups）
+
+在检测 + 队列 + 踩取消 + Deezer 排除之外，补三个一致性 / 性能小修：
+
+- **[#7] 切回电台清角标**：radio（server）曲目不是 unified item、没有 fan-out。
+  `loadNextTrack` 进 radio 分支时 `setFanOutCount(0)`，否则上一首搜索歌的平台数
+  会残留在电台曲目上（❤ 填充仍由 `next.liked` 驱动，正常）。
+- **[#10] fanOut 记录合并而非覆盖**：`detectLikedAndSync` 写 `state.fanOut[mergedId]`
+  时与旧记录取并集（只留 likeable 平台）。某次搜索缺某平台 source（超时 / 聚类不同）
+  时，不再把那平台从记录里抹掉、角标少算；`dislikeMerged` 已 `delete` 整条记录，
+  故不会复活被取消的红心。
+- **[#9] importLiked 顺手暖缓存**：拉全量「我的喜欢」后 `primeLikedCache` 填充
+  `likedCache`，紧接着的切歌 detect 不必把 QQ 1000+ 首再重拉一遍（此前两条路径
+  各拉各的）。
+
+仍**不做**（既有限制 / 设计如此，需产品决策再动）：
+
+- **[#5] 两套真值源不主动对账**：`state.providers[].liked`（本地）与 `likedCache`
+  （远端派生）并存；队列重试已大幅收窄失配窗口，全量 reconcile 收益低、风险高。
+- **[#6] mergedId 跨次搜索漂移**：同 [不做什么] 所述，属版本拆分搜索的固有特性。
+- **[#8] 无「取消红心」正常入口**：手动 ❤ 是「只加不减」的设计；移除意图统一走
+  「踩」（dislikeMerged）。如需独立的取消红心按钮，属产品决策。
