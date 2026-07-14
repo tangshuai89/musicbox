@@ -200,7 +200,7 @@ export function usePlayer(
       // gesture. The graph is built lazily on the first play (onPlay /
       // handlePlayPause). Until then audio plays through the default path.
     },
-    [presentCover, audioRef],
+    [presentCover, audioRef, wpsRef],
   );
 
   /**

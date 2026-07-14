@@ -71,7 +71,9 @@ export function useSpotifyWpsPlayer({ enabled }: Options): UseSpotifyWpsPlayer {
         }
         const w = createWpsWrapper();
         wrapperRef.current = w;
-        const unsub = w.onStateChange((s) => {
+        // No stored unsubscribe: teardown calls w.disconnect() which clears
+        // all subscribers, and the callback already guards on `cancelled`.
+        w.onStateChange((s) => {
           if (!cancelled) setState(s);
         });
         await w.connect(tok.accessToken);

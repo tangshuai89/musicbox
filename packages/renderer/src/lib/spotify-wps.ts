@@ -17,7 +17,7 @@
  *    接收 WebSocket 字节。
  */
 
-const SDK_SCRIPT_SRC = 'https://sdk.scdn.co/spotify-player.js';
+// SDK 脚本由 index.html defer 加载（<script src="https://sdk.scdn.co/spotify-player.js">）。
 
 export type WpsStateCallback = (s: WpsPlayerState) => void;
 
@@ -84,9 +84,8 @@ interface SpotifyPlayer {
   activateElement?(): Promise<void>;
   nextTrack?(): Promise<void>;
   previousTrack?(): Promise<void>;
-  on(event: any, cb: any): void;
-  // SDK 实际用的是 addListener，但类型简化
-  addListener?(event: string, cb: (...args: unknown[]) => void): void;
+  // SDK 事件回调各自 payload 不同，统一收成 unknown，回调里 narrow。
+  on(event: string, cb: (payload: unknown) => void): void;
 }
 
 interface SpotifyWebPlaybackState {
@@ -157,7 +156,9 @@ export function createWpsWrapper(): WpsWrapper {
   }
 
   function bindListeners(p: SpotifyPlayer): void {
-    const onPlayerStateChanged = (sdkState: SpotifyWebPlaybackState | null) => {
+    // SDK 事件 payload 类型各异，回调统一收 unknown 再 narrow（见 on() 签名）。
+    const onPlayerStateChanged = (payload: unknown): void => {
+      const sdkState = payload as SpotifyWebPlaybackState | null;
       if (!sdkState || !sdkState.track) {
         emit({ hasTrack: false, isPlaying: false, track: null, positionMs: 0 });
         return;
@@ -176,32 +177,26 @@ export function createWpsWrapper(): WpsWrapper {
         positionMs: sdkState.position ?? 0,
       });
     };
-    const onReady = (info: { device_id: string }) => {
-      // 切到本设备：让 Spotify 把后续推流路由到本 wrapper
-      // SDK 没有"transfer to self"，但 Spotify Connect 客户端调用
-      // PUT /v1/me/player 切到本 deviceId 即可。这一步由 useSpotifyWpsPlayer
-      // 在拿到 deviceId 后通过 transferHere() 完成。
-      (player as unknown as { _deviceId?: string })._deviceId = info.device_id;
+    const onReady = (payload: unknown): void => {
+      // 切到本设备：Spotify Connect 客户端调 PUT /v1/me/player 切到本 deviceId
+      // 即可（由 useSpotifyWpsPlayer 拿到 deviceId 后经 transferHere() 完成）。
+      const info = payload as { device_id?: string };
+      if (info?.device_id) {
+        (player as unknown as { _deviceId?: string })._deviceId = info.device_id;
+      }
     };
-    const onNotReady = () => {
+    const onNotReady = (): void => {
       emit({ hasTrack: false, isPlaying: false, track: null, positionMs: 0 });
     };
-    const onInitialState = (s: SpotifyWebPlaybackState | null) => {
-      onPlayerStateChanged(s);
+    const onError = (label: string) => (payload: unknown): void => {
+      console.warn(`[spotify-wps] ${label}:`, payload);
     };
-    const onAuthError = (msg: string) => {
-      console.warn('[spotify-wps] auth_error:', msg);
-    };
-    const onPlaybackError = (msg: string) => {
-      console.warn('[spotify-wps] playback_error:', msg);
-    };
-    // SDK 同时支持 .on 和 .addListener，两个都绑
-    (p as any).on('player_state_changed', onPlayerStateChanged);
-    (p as any).on('ready', onReady);
-    (p as any).on('not_ready', onNotReady);
-    (p as any).on('initial_state', onInitialState);
-    (p as any).on('authentication_error', onAuthError);
-    (p as any).on('playback_error', onPlaybackError);
+    p.on('player_state_changed', onPlayerStateChanged);
+    p.on('ready', onReady);
+    p.on('not_ready', onNotReady);
+    p.on('initial_state', onPlayerStateChanged);
+    p.on('authentication_error', onError('authentication_error'));
+    p.on('playback_error', onError('playback_error'));
   }
 
   async function connect(token: string): Promise<void> {
