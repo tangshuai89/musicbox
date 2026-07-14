@@ -509,16 +509,9 @@ export class MusicService {
       }
       // 统一搜索结果里 sources[].url 要带可播放的代理路径——provider.search()
       // 返回的 track.audioUrl 可能是空（QQ/网易云 URL 短期过期，播放时由
-      // getStreamUrl 重新拿），所以这里替换成后端代理的相对路径，前端拼 base
-      // 后直接当 <audio src> 用。Deezer 的 audioUrl 已是 http 完整 URL（30s
-      // 预览），保留原值。
-      tracks = tracks.map((t) => ({
-        ...t,
-        audioUrl:
-          provider === 'deezer' && t.audioUrl && t.audioUrl.startsWith('http')
-            ? t.audioUrl
-            : this.streamPath(t),
-      }));
+      // getStreamUrl 重新拿）。toPlayableTrack 统一换成后端代理相对路径，前端
+      // 拼 base 后直接当 <audio src> 用（与「我的喜欢」导入共用同一归一化）。
+      tracks = tracks.map((t) => this.toPlayableTrack(t));
       return { platform: provider, tracks, total: tracks.length };
     } catch (err) {
       // 未登录（NotFoundException）/ 平台报错 → 记一条 error 返回空结果。
@@ -548,6 +541,27 @@ export class MusicService {
     return track.provider === 'qq' && track.mediaMid
       ? `${base}?mm=${encodeURIComponent(track.mediaMid)}`
       : base;
+  }
+
+  /**
+   * 把 provider.search() / fetchLiked() 返回的 track 归一成前端可直接当
+   * <audio src> 用的形状：audioUrl 换成后端代理相对路径（QQ/网易云的原始
+   * audioUrl 是空的——短期过期，播放时由 getStreamUrl 重新拿）。Deezer 的
+   * audioUrl 已是 http 完整 URL（30s 预览）则保留。
+   *
+   * 统一搜索和「我的喜欢」导入共用同一份归一化，避免两条路径漂移——曾因为
+   * 只有搜索做了这步、库导入没做，导致红心列表点击拿到空 audioUrl、无法切歌。
+   */
+  private toPlayableTrack(track: Track): Track {
+    return {
+      ...track,
+      audioUrl:
+        track.provider === 'deezer' &&
+        track.audioUrl &&
+        track.audioUrl.startsWith('http')
+          ? track.audioUrl
+          : this.streamPath(track),
+    };
   }
 
   async markDisliked(
@@ -1296,8 +1310,12 @@ export class MusicService {
       error: 'deezer_anonymous_no_user_likes',
     });
 
-    // 合并去重（走 MatchService.mergeLibrary → 内部复用 buildUnifiedItems）
-    const items = this.match.mergeLibrary(allTracks);
+    // 合并去重（走 MatchService.mergeLibrary → 内部复用 buildUnifiedItems）。
+    // 先把每首 track 的 audioUrl 归一成后端代理路径（fetchLiked 返回的是空），
+    // 否则 sources[].url 为空、红心列表点击时前端拿不到可播放的 <audio src>。
+    const items = this.match.mergeLibrary(
+      allTracks.map((t) => this.toPlayableTrack(t)),
+    );
 
     const importedAt = Date.now();
     this.storage.set(this.libraryKey(session.id), {
