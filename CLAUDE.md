@@ -1,4 +1,4 @@
-# Musicbox
+# Maestro
 
 跨平台音乐播放器（Electron + React + NestJS），聚合网易云/QQ 音乐/Deezer/Spotify，DeepSeek 做 AI 推荐。
 

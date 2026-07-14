@@ -1,5 +1,5 @@
 {
-  "name": "@qq-fm/electron",
+  "name": "@maestro/electron",
   "version": "1.0.0",
   "private": true,
   "main": "dist/main.js",
@@ -21,8 +21,8 @@
     "@types/node": "^22.0.0"
   },
   "build": {
-    "appId": "com.qqfm.player",
-    "productName": "QQ FM Player",
+    "appId": "io.github.tangshuai89.maestro",
+    "productName": "Maestro",
     "mac": {
       "category": "public.app-category.music",
       "target": "dmg",

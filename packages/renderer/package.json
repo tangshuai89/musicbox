@@ -1,5 +1,5 @@
 {
-  "name": "@qq-fm/renderer",
+  "name": "@maestro/renderer",
   "private": true,
   "version": "1.0.0",
   "type": "module",

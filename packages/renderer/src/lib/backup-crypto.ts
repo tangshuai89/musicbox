@@ -70,7 +70,7 @@ async function deriveKey(
 }
 
 /**
- * 加密 bundle → 单个 base64 字符串（写进 .musicbox-backup 文本文件）。
+ * 加密 bundle → 单个 base64 字符串（写进 .maestro-backup 文本文件）。
  * manifest 作为 AAD 绑定，改动 manifest 会让解密失败（防篡改）。
  */
 export async function encryptBundle(
@@ -114,7 +114,7 @@ export async function decryptBundle(
   if (!passphrase) throw new Error('口令不能为空');
   const parts = blob.trim().split('.');
   if (parts.length !== 3 || parts[0] !== MAGIC) {
-    throw new Error('不是有效的 musicbox 备份文件');
+    throw new Error('不是有效的 Maestro 备份文件');
   }
   let manifest: BackupManifest;
   try {

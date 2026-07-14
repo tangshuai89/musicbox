@@ -137,7 +137,7 @@ GET  /api/music/stream/spotify/{trackId}
 ### 需 Premium 账号手动验证（本轮开发者无 Premium，代码 code-complete 未运行验证）
 
 - [ ] Premium 账号能从 Spotify 源直接播**完整**曲目（>30s）
-- [ ] Spotify 桌面端能看到 "musicbox-xxxx" 设备
+- [ ] Spotify 桌面端能看到 "maestro-xxxx" 设备
 - [ ] pause / resume / skip / seek transport 生效
 - [ ] token 到期（1h）时自动重连不掉播
 

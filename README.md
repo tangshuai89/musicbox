@@ -1,4 +1,4 @@
-# Musicbox
+# Maestro
 
 **English** · [简体中文](./README.zh-CN.md) · [日本語](./README.ja.md)
 
@@ -26,7 +26,7 @@ Built with **Electron + React + NestJS** as a desktop-first client.
 Streaming platforms each hold a slice of your taste and a slice of the
 world's catalogue — and neither slice is complete. A song you love on QQ
 Music is missing from NetEase; a Spotify recommendation has no rights in
-your region. Musicbox treats all four platforms as **one library you own**:
+your region. Maestro treats all four platforms as **one library you own**:
 
 ```
    ┌── Connect ──────────────────────────────────────────────┐
@@ -58,7 +58,7 @@ your region. Musicbox treats all four platforms as **one library you own**:
 ### Design principles
 
 - **Desktop client first.** All credentials and your DeepSeek API key live
-  locally on your machine — nothing is sent to a Musicbox server (there
+  locally on your machine — nothing is sent to a Maestro server (there
   isn't one).
 - **You own the aggregation.** Your liked songs from all platforms become a
   single library that only you hold.
@@ -248,7 +248,7 @@ defaults.
   endpoints and captures `MUSIC_U` from the `Set-Cookie` on success. A
   manual "paste `MUSIC_U`" fallback is available. The cookie lives ~30
   days; when calls start returning `301`, scan again.
-- **QQ Music** — click **登录** (desktop app only). Musicbox opens an embedded
+- **QQ Music** — click **登录** (desktop app only). Maestro opens an embedded
   QQ Music login window and captures the real login cookie
   (`qm_keyst` / `qqmusic_key` / `uin`) — **no** QQ Connect OAuth, no
   AppID/secret. Search + full-track playback (standard / 320 kbps / lossless)
@@ -331,7 +331,7 @@ This is a **local-first personal tool**. Platform cookies (`MUSIC_U`,
 QQ login cookies, Spotify refresh tokens), sessions, your DeepSeek API
 key and the unified library are stored in plaintext under
 `packages/server/.storage/` on your own machine and are **git-ignored**.
-Nothing is uploaded to any Musicbox-operated service; there is none.
+Nothing is uploaded to any Maestro-operated service; there is none.
 Treat `.storage/` like a password file.
 
 ## License

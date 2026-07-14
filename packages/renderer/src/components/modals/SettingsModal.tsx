@@ -86,7 +86,7 @@ export default function SettingsModal({ onClose }: Props) {
       const a = document.createElement('a');
       const stamp = new Date().toISOString().slice(0, 10);
       a.href = url;
-      a.download = `musicbox-${stamp}.musicbox-backup`;
+      a.download = `maestro-${stamp}.maestro-backup`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -203,7 +203,7 @@ export default function SettingsModal({ onClose }: Props) {
           </p>
           <input
             type="file"
-            accept=".musicbox-backup,application/octet-stream"
+            accept=".maestro-backup,application/octet-stream"
             className="settings-file"
             onChange={(e) => setImportFile(e.target.files?.[0] ?? null)}
           />

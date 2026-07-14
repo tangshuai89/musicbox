@@ -10,6 +10,11 @@ import {
 import * as path from 'path';
 import { spawn, ChildProcess } from 'node:child_process';
 
+// Pin the app name so userData / logs land under a stable, branded dir in
+// BOTH dev and packaged mode (~/Library/Application Support/Maestro). Without
+// this, dev would derive the name from the electron package.json (@maestro/…).
+app.setName('Maestro');
+
 const isDev = !app.isPackaged;
 
 let mainWindow: BrowserWindow | null = null;
@@ -66,7 +71,7 @@ function startSidecar(): Promise<void> {
       'main.js',
     );
     console.log(`[main] spawning sidecar: ${serverEntry}`);
-    // Persist under Electron's userData (~/Library/Application Support/musicbox
+    // Persist under Electron's userData (~/Library/Application Support/Maestro
     // on macOS) so state + backups survive app updates and live in a stable,
     // user-discoverable place — not next to the read-only .app bundle. Backups
     // sit alongside state.json in a `backups/` subdir.
@@ -164,7 +169,7 @@ function refreshTray(): void {
     { type: 'separator' },
     { label: '显示主窗口', click: () => showMainWindow() },
     {
-      label: '退出 musicbox',
+      label: '退出 Maestro',
       click: () => {
         isQuitting = true;
         app.quit();
@@ -172,7 +177,7 @@ function refreshTray(): void {
     },
   ]);
   tray.setContextMenu(menu);
-  tray.setToolTip(title ? `musicbox · ${nowPlaying}` : 'musicbox');
+  tray.setToolTip(title ? `Maestro · ${nowPlaying}` : 'Maestro');
 }
 
 function createTray(): void {

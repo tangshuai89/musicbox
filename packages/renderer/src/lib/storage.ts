@@ -9,13 +9,35 @@ import type { MusicProvider, QqQuality } from '../api';
  */
 export const STORAGE_KEYS = {
   provider: 'music-provider',
-  volume: 'musicbox:volume',
-  quality: 'musicbox:qq-quality',
-  deezerPreset: 'musicbox:deezer-preset',
-  theme: 'musicbox:theme',
+  volume: 'maestro:volume',
+  quality: 'maestro:qq-quality',
+  deezerPreset: 'maestro:deezer-preset',
+  theme: 'maestro:theme',
 } as const;
 
 export type ThemeMode = 'dark' | 'light' | 'system';
+
+// 一次性迁移：项目改名 musicbox → maestro，把旧 `musicbox:*` 键的值搬到新
+// `maestro:*` 键，避免老用户的 音量/主题/预设/音质 被重置。模块首次 import
+// 时（早于任何 hook 读取）执行一次；搬完删旧键，幂等。
+const LEGACY_KEY_MAP: Record<string, string> = {
+  'musicbox:volume': STORAGE_KEYS.volume,
+  'musicbox:qq-quality': STORAGE_KEYS.quality,
+  'musicbox:deezer-preset': STORAGE_KEYS.deezerPreset,
+  'musicbox:theme': STORAGE_KEYS.theme,
+};
+(function migrateLegacyKeys(): void {
+  try {
+    for (const [oldKey, newKey] of Object.entries(LEGACY_KEY_MAP)) {
+      const oldVal = localStorage.getItem(oldKey);
+      if (oldVal == null) continue;
+      if (localStorage.getItem(newKey) == null) localStorage.setItem(newKey, oldVal);
+      localStorage.removeItem(oldKey);
+    }
+  } catch {
+    /* private mode / quota — 迁移失败就用默认值，不致命 */
+  }
+})();
 
 // ── Provider ──
 export function readStoredProvider(): MusicProvider | null {

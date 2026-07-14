@@ -31,7 +31,7 @@ DeepSeek 推荐、跨平台 fan-out ❤、visionOS 风 Bento UI。
   - [ ] `npm run pack` 成功出 macOS dmg
   - [ ] 装到 `/Applications` 后双击启动：选源 → 电台放歌 → 重启 session 仍在
   - [ ] 关 App 时 Activity Monitor 看 `node` 进程已退
-  - [ ] `packages/server/.storage/` 路径在 `~/Library/Application Support/musicbox/` 下
+  - [ ] `packages/server/.storage/` 路径在 `~/Library/Application Support/Maestro/` 下
 - **风险**：
   - 第一次跑 `electron-builder` 经常卡在 code signing（开发期 unset 即可）
   - dev 模式 / prod 模式的 API base 解析路径都已实现，**主要剩冒烟测试**
@@ -67,12 +67,12 @@ DeepSeek 推荐、跨平台 fan-out ❤、visionOS 风 Bento UI。
 - **已实现（#3.1）**：
   - Settings modal 加 "导出/导入会话快照"：`state.json` 全量 + localStorage 关键键
     （provider / volume / quality / deezer preset / theme）打包成**口令加密**
-    （AES-256-GCM + PBKDF2）的 `.musicbox-backup` 文件导出
+    （AES-256-GCM + PBKDF2）的 `.maestro-backup` 文件导出
   - 导入做 manifest version 检查 + additive 合并（`StorageService.mergeFrom`，
     不覆盖已有平台的 liked 库 / 登录态 / secrets）
   - `STORAGE_BACKUP_DIR` env + 每日自动备份（`BackupController`，保留最近 7 份）
   - Electron 打包模式把 `STORAGE_DIR` / `STORAGE_BACKUP_DIR` 指到
-    `~/Library/Application Support/musicbox/`（顺手修了 sidecar 无 STORAGE_DIR 的隐患）
+    `~/Library/Application Support/Maestro/`（顺手修了 sidecar 无 STORAGE_DIR 的隐患）
 - **验收**：
   - [x] 导出加密快照 + 合并导入（服务端 4 路由端到端跑通；mergeFrom 6 条单测；
         AES-GCM 加解密 round-trip 验过：对口令解出、错口令拒绝）
@@ -197,7 +197,7 @@ DeepSeek 推荐、跨平台 fan-out ❤、visionOS 风 Bento UI。
 ## 7. 播放体验 & AI 深化（2026-07-13 竞品分析新增）
 
 > 来自一轮竞品扫描（MusicFree / 洛雪 lx-music / Listen1 / YesPlayMusic / Feishin /
-> Spotify AI DJ / Apple AutoMix）。结论：musicbox 在 **AI 推荐 + 跨平台 ❤ 同步 + Bento UI**
+> Spotify AI DJ / Apple AutoMix）。结论：Maestro 在 **AI 推荐 + 跨平台 ❤ 同步 + Bento UI**
 > 上已领先同类开源播放器；缺的是老牌桌面播放器的"基本功"（音效/桌面歌词/桌面集成）。
 > 本章前三项补基本功，7.4 深化 AI 护城河。详细分析只在 Notion 维护（个人重要，本地不留副本）→ https://app.notion.com/p/musicbox-2026-07-39c9be628711800b86f1daff4e05ad6b
 
@@ -310,6 +310,6 @@ DeepSeek 推荐、跨平台 fan-out ❤、visionOS 风 Bento UI。
 
 ## 知识库挂钩
 
-做完 #1 后，把"如何打包" 的踩坑沉淀到 `~/knowledge/musicbox/packaging.md`；
+做完 #1 后，把"如何打包" 的踩坑沉淀到 `~/knowledge/maestro/packaging.md`；
 做完 #2 后沉淀 Spotify OAuth + Web Playback SDK 的 notes 到
-`~/knowledge/musicbox/spotify.md`。这样下期迭代（或交接）的人有现成入口。
+`~/knowledge/maestro/spotify.md`。这样下期迭代（或交接）的人有现成入口。

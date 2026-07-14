@@ -18,7 +18,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 
 // ⚠️ 必须在 import AppModule 之前设 env——ConfigService 在构造时读 storageDir。
-const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'musicbox-e2e-'));
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-e2e-'));
 process.env.STORAGE_DIR = tmpDir;
 process.env.PORT = '0'; // 让 OS 分配随机端口
 

@@ -1,5 +1,5 @@
 {
-  "name": "@qq-fm/server",
+  "name": "@maestro/server",
   "version": "1.0.0",
   "private": true,
   "scripts": {

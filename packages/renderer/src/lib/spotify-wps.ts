@@ -126,7 +126,7 @@ function waitForSdk(): Promise<SpotifySdk> {
 
 /** 设备名：避免 dev + prod 同账号冲突，所以带 pid + 短随机后缀。 */
 function makeDeviceName(): string {
-  return `musicbox-${Math.floor(Math.random() * 1e6).toString(36)}`;
+  return `maestro-${Math.floor(Math.random() * 1e6).toString(36)}`;
 }
 
 export function createWpsWrapper(): WpsWrapper {

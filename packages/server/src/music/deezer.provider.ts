@@ -123,7 +123,7 @@ export class DeezerMusicProvider {
     url.searchParams.set('limit', String(Math.min(count, 50)));
 
     const res = await fetch(url.toString(), {
-      headers: { 'User-Agent': 'QQ-FM-Player/1.0 (Deezer anonymous)' },
+      headers: { 'User-Agent': 'Maestro/1.0 (Deezer anonymous)' },
     });
     if (!res.ok) {
       throw new Error(`deezer search failed: ${res.status}`);
@@ -154,7 +154,7 @@ export class DeezerMusicProvider {
   ): Promise<Track[]> {
     const url = `${DeezerMusicProvider.API}/editorial/${editorialId}/charts?limit=${count}`;
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'QQ-FM-Player/1.0 (Deezer anonymous)' },
+      headers: { 'User-Agent': 'Maestro/1.0 (Deezer anonymous)' },
     });
     if (!res.ok) {
       throw new Error(`deezer editorial fetch failed: ${res.status}`);
@@ -179,7 +179,7 @@ export class DeezerMusicProvider {
     const res = await fetch(
       `${DeezerMusicProvider.API}/track/${trackId}`,
       {
-        headers: { 'User-Agent': 'QQ-FM-Player/1.0 (Deezer anonymous)' },
+        headers: { 'User-Agent': 'Maestro/1.0 (Deezer anonymous)' },
       },
     );
     if (!res.ok) {

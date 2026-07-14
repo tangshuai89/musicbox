@@ -1,4 +1,4 @@
-// Dependency-free icon generator. Draws a placeholder musicbox app icon
+// Dependency-free icon generator. Draws a placeholder Maestro app icon
 // (gradient squircle + white play triangle) and a monochrome macOS tray
 // template glyph, encoding PNGs by hand (zlib is Node built-in) so we don't
 // pull in sharp/canvas. On macOS it also folds the PNGs into an .icns via the

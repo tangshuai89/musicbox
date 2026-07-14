@@ -28,7 +28,7 @@ export class ConfigService {
   readonly storageDir = process.env.STORAGE_DIR ?? path.resolve('.storage');
 
   // Auto-backup target. On macOS the packaged app resolves this to
-  // ~/Library/Application Support/musicbox/backups via the STORAGE_BACKUP_DIR
+  // ~/Library/Application Support/Maestro/backups via the STORAGE_BACKUP_DIR
   // env (set by Electron main); dev falls back to <storageDir>/backups.
   readonly backupDir =
     process.env.STORAGE_BACKUP_DIR ?? path.join(this.storageDir, 'backups');
