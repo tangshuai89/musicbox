@@ -18,6 +18,11 @@
 - [ ] 当前正在播的歌曲 ❤ 状态显示：已 fan-out 时，❤ 图标高亮 + 后面带"3❤"小角标
 - [ ] 平台搜索失败的 source 不写入 liked 集合（避免幽灵态）
 - [ ] `fanOut` 状态持久化到 .storage/state.json，重启后保留
+- [x] 播放到一首已红心的歌 → 后台跨平台匹配补齐其余已登录平台（detect 已实现）；
+      **匹配成功后把新平台的 source 增量写进「我的喜欢」库快照**
+      （`MusicService.patchLibraryWithSources`），弹窗刷新/重开即可看到新平台徽章。
+      前端：播到红心歌延迟 ~2.5s 刷新 ❤ 计数 + 已打开弹窗（等异步补库落地）。
+      回归见 cross-platform-match.e2e #8。
 
 ## 接口规格
 
@@ -80,7 +85,12 @@ POST /music/like/:trackId?provider=qq
 ## 不做什么
 
 - 不解决"QQ/Deezer 没有公开 ❤ API"的问题——只本地记录。
-- 不做跨平台 track 自动匹配（P3 的活），fan-out 完全按用户搜出来的 sources 列表原样写。
+- ~~不做跨平台 track 自动匹配（P3 的活），fan-out 完全按用户搜出来的 sources 列表原样写。~~
+  > ✅ 已实现（2026-07）：点 ❤ / detect 时带上歌曲元数据，后台同步队列
+  > (`LikeSyncQueue` 的 discover 步骤 → `MusicService.resolveEquivalents`) 去
+  > 「已登录但 sources 里没有」的 likeable 平台搜同名同时长的等价曲目并同步红心。
+  > 严格匹配：normalizeKey(歌名+歌手) 一致 + duration ±3s。回归见
+  > `cross-platform-match.e2e.test.ts`。仅「补齐新的」，不回填存量收藏。
 - 不动播放队列本身。
 
 ## 技术约束

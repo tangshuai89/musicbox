@@ -83,6 +83,7 @@ export default function App() {
   // 按钮上展示数量，点击弹窗内自己处理 refresh。
   const [likedOpen, setLikedOpen] = useState(false);
   const [likedCount, setLikedCount] = useState(0);
+  const [likedVersion, setLikedVersion] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const reloadLikedCount = async () => {
     try {
@@ -95,6 +96,26 @@ export default function App() {
   useEffect(() => {
     void reloadLikedCount();
   }, [player.provider, auth.auth.loggedIn]);
+
+  // Playing a ❤ song: usePlayer's detect already kicks off the cross-platform
+  // fan-out + incremental library patch in the background. That's async (it
+  // has to search the other platforms), so wait a beat, then refresh the ❤
+  // count + any open liked-library list + re-detect current track's fanOut
+  // state so the newly-synced platform badges show up in the UI.
+  const heartSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!player.track?.liked) return;
+    if (heartSyncTimerRef.current) clearTimeout(heartSyncTimerRef.current);
+    heartSyncTimerRef.current = setTimeout(() => {
+      void reloadLikedCount();
+      setLikedVersion((v) => v + 1);
+      player.refreshLikedState();
+    }, 2500);
+    return () => {
+      if (heartSyncTimerRef.current) clearTimeout(heartSyncTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [player.track?.id, player.track?.liked]);
 
   // Tray transport controls (Electron): map tray commands onto the player and
   // report state back so the tray label/tooltip stay in sync. usePlayer stays
@@ -186,6 +207,7 @@ export default function App() {
             loading={player.loading}
             playing={player.playing}
             accountName={auth.auth.user?.nickname ?? 'Guest'}
+            trialFellBack={player.trialFellBack}
           />
           <LyricsCard
             lyrics={lyrics.lyrics}
@@ -255,6 +277,7 @@ export default function App() {
 
       {likedOpen && (
         <LikedLibraryModal
+          refreshSignal={likedVersion}
           onClose={() => {
             setLikedOpen(false);
             void reloadLikedCount();

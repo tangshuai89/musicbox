@@ -28,12 +28,29 @@ export class RecoController {
   /** 跑一次推荐。 */
   @Post('run')
   async run(
-    @Body() body: { count?: number; language?: string; mood?: string } = {},
+    @Body()
+    body: {
+      count?: number;
+      language?: string;
+      mood?: string;
+      exclude?: Array<{ title?: string; artist?: string }>;
+    } = {},
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
     const session = this.sessionService.resolve(req, res);
-    return this.reco.run(session, body ?? {});
+    // 宽松清洗 exclude：只留有 title+artist 的项，其余丢弃（脏数据不 400）。
+    const exclude = Array.isArray(body?.exclude)
+      ? body.exclude
+          .filter(
+            (e): e is { title: string; artist: string } =>
+              !!e &&
+              typeof e.title === 'string' &&
+              typeof e.artist === 'string',
+          )
+          .slice(0, 200)
+      : undefined;
+    return this.reco.run(session, { ...(body ?? {}), exclude });
   }
 
   /** 写 key 到 .storage/secrets.json。 */

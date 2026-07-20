@@ -1,12 +1,39 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Modal from '../common/Modal';
 import { getLibrary, importLibrary } from '../../api';
-import type { LibraryImportResult, UnifiedSearchItem } from '../../api';
+import type { LibraryImportResult, UnifiedSearchItem, MusicProvider } from '../../api';
+import { groupLibraryItems, itemPlatforms } from '../../lib/groupLibrary';
+import { placeholderCover } from '../../lib/placeholderCover';
 
 interface Props {
   onClose: () => void;
   /** 把点击的 ❤ 歌放进播放队列（与搜索结果同源）。 */
   onPlay: (items: UnifiedSearchItem[], index: number) => void;
+  /** 递增计数：外部（播到红心歌、跨平台补齐后）触发一次静默刷新。 */
+  refreshSignal?: number;
+}
+
+/** 平台徽章：一个平台一个色块。QQ=Q / 网易云=云 / Spotify=S / Deezer=D。 */
+function PlatformBadges({ platforms }: { platforms: MusicProvider[] }) {
+  return (
+    <div className="liked-modal-sources">
+      {platforms.map((platform) => (
+        <span
+          key={platform}
+          className={`liked-modal-badge liked-modal-badge-${platform}`}
+          title={platform}
+        >
+          {platform === 'qq'
+            ? 'Q'
+            : platform === 'netease'
+              ? '云'
+              : platform === 'spotify'
+                ? 'S'
+                : 'D'}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 /**
@@ -17,11 +44,36 @@ interface Props {
  * 数据来源：服务端 /music/library 返回的 UnifiedSearchItem[]，本身已经
  * 跨平台去重合并，所以一首歌不会因为 QQ + 网易云都 ❤ 而出现两次。
  */
-export default function LikedLibraryModal({ onClose, onPlay }: Props) {
+export default function LikedLibraryModal({
+  onClose,
+  onPlay,
+  refreshSignal,
+}: Props) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [data, setData] = useState<LibraryImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // refreshSignal 触发的静默刷新：只换数据、不闪"加载中"。首个值跳过（挂载
+  // 时下面的 effect 已经拉过一次），避免打开就双拉。
+  const firstSignal = useRef(true);
+  useEffect(() => {
+    if (firstSignal.current) {
+      firstSignal.current = false;
+      return;
+    }
+    let cancelled = false;
+    getLibrary()
+      .then((res) => {
+        if (!cancelled) setData(res);
+      })
+      .catch(() => {
+        // 静默刷新失败不打扰用户（列表保持现状）。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshSignal]);
 
   // 打开弹窗时拉一次缓存（不强制 import；如果从未导入过就是空态）。
   useEffect(() => {
@@ -58,25 +110,31 @@ export default function LikedLibraryModal({ onClose, onPlay }: Props) {
     }
   };
 
-  const items = data?.items ?? [];
-  // 平台计数从「合并后的 items」里数（有多少行含该平台的源），而不是用
-  // sources[].count（那是去重前的原始拉取数）。否则会出现"总数 985 <
-  // QQ 1000"这种自相矛盾——因为 QQ 1000 + 网易云 6 合并去重后才是 985。
-  // 从 items 数保证：每个平台数 ≤ 总数，且与每行显示的徽章一一对应。
-  // 跨平台都 ❤ 的歌会同时计入两个平台（所以两者之和可能 > 总数，这符合直觉）。
-  const qqCount = items.filter((it) =>
-    it.sources.some((s) => s.platform === 'qq'),
-  ).length;
-  const neCount = items.filter((it) =>
-    it.sources.some((s) => s.platform === 'netease'),
-  ).length;
+  const items = useMemo(() => data?.items ?? [], [data]);
+  // 展示级跨平台分组：把后端没并起来的同名副本（QQ 加了译名括号那种）折叠成
+  // 一个可展开的组。仅影响展示，onPlay 仍按成员在 items 里的原始下标定位。
+  const groups = useMemo(() => groupLibraryItems(items), [items]);
+  // 哪些组当前展开（按 group.key）。
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggle = (key: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+
+  // 平台计数从「分组后的组」里数（一个组含该平台就算一次），与每行徽章一致。
+  // 跨平台都 ❤ 的歌会同时计入两个平台（两者之和可能 > 总数，符合直觉）。
+  const qqCount = groups.filter((g) => g.platforms.includes('qq')).length;
+  const neCount = groups.filter((g) => g.platforms.includes('netease')).length;
 
   return (
     <Modal onClose={onClose} panelClassName="liked-modal-panel">
       <div className="liked-modal-header">
         <span className="liked-modal-title">❤ 我的喜欢</span>
         <span className="liked-modal-count">
-          共 {items.length} 首
+          共 {groups.length} 首
           {qqCount + neCount > 0 && (
             <span className="liked-modal-count-detail">
               {' '}· QQ {qqCount} · 网易云 {neCount}
@@ -113,59 +171,105 @@ export default function LikedLibraryModal({ onClose, onPlay }: Props) {
           </div>
         )}
 
-        {!loading && items.length > 0 && (
+        {!loading && groups.length > 0 && (
           <ul className="liked-modal-list">
-            {items.map((it, idx) => (
-              <li
-                key={it.id}
-                className="liked-modal-row"
-                onClick={() => onPlay(items, idx)}
-              >
-                {it.coverUrl ? (
-                  <img
-                    className="liked-modal-cover"
-                    src={it.coverUrl}
-                    alt=""
-                    loading="lazy"
-                  />
-                ) : (
-                  <div className="liked-modal-cover liked-modal-cover-empty">
-                    ♪
-                  </div>
-                )}
-                <div className="liked-modal-meta">
-                  <div className="liked-modal-track">{it.title}</div>
-                  <div className="liked-modal-artist">
-                    {it.artist}
-                    {it.album && (
-                      <span className="liked-modal-album"> · {it.album}</span>
+            {groups.map((g) => {
+              const rep = g.representative;
+              const multi = g.members.length > 1;
+              const isOpen = multi && expanded.has(g.key);
+              return (
+                <li key={g.key} className="liked-modal-group">
+                  <div
+                    className={`liked-modal-row${isOpen ? ' is-open' : ''}`}
+                    onClick={() => onPlay(items, g.representativeIndex)}
+                  >
+                    {rep.coverUrl ? (
+                      <img
+                        className="liked-modal-cover"
+                        src={rep.coverUrl}
+                        alt=""
+                        loading="lazy"
+                      />
+                    ) : (
+                      <div
+                        className="liked-modal-cover liked-modal-cover-empty"
+                        style={{
+                          backgroundImage: placeholderCover(
+                            `${rep.title}·${rep.artist}`,
+                          ).background,
+                        }}
+                      >
+                        ♪
+                      </div>
+                    )}
+                    <div className="liked-modal-meta">
+                      <div className="liked-modal-track">{rep.title}</div>
+                      <div className="liked-modal-artist">
+                        {rep.artist}
+                        {rep.album && (
+                          <span className="liked-modal-album">
+                            {' '}
+                            · {rep.album}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <PlatformBadges platforms={g.platforms} />
+                    {multi && (
+                      <button
+                        className="liked-modal-toggle"
+                        aria-label={isOpen ? '收起' : '展开各平台版本'}
+                        aria-expanded={isOpen}
+                        title={`${g.members.length} 个平台版本`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggle(g.key);
+                        }}
+                      >
+                        <span className="liked-modal-toggle-count">
+                          {g.members.length}
+                        </span>
+                        <span className="liked-modal-toggle-chevron">
+                          {isOpen ? '▾' : '▸'}
+                        </span>
+                      </button>
                     )}
                   </div>
-                </div>
-                <div className="liked-modal-sources">
-                  {/* 一个平台一个徽章：合并后同一首歌可能有多条同平台的
-                      source（QQ 里的重复版本合并进同一 item），按平台去重，
-                      否则 key 会撞（React "two children with the same key"）。 */}
-                  {[...new Set(it.sources.map((s) => s.platform))].map(
-                    (platform) => (
-                      <span
-                        key={platform}
-                        className={`liked-modal-badge liked-modal-badge-${platform}`}
-                        title={platform}
-                      >
-                        {platform === 'qq'
-                          ? 'Q'
-                          : platform === 'netease'
-                            ? '云'
-                            : platform === 'spotify'
-                              ? 'S'
-                              : 'D'}
-                      </span>
-                    ),
+
+                  {isOpen && (
+                    <ul className="liked-modal-sublist">
+                      {g.members.map((m) => (
+                        <li
+                          key={m.item.id}
+                          className="liked-modal-subrow"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onPlay(items, m.index);
+                          }}
+                        >
+                          <span className="liked-modal-subrow-dot" aria-hidden />
+                          <div className="liked-modal-meta">
+                            <div className="liked-modal-track">
+                              {m.item.title}
+                            </div>
+                            <div className="liked-modal-artist">
+                              {m.item.artist}
+                              {m.item.album && (
+                                <span className="liked-modal-album">
+                                  {' '}
+                                  · {m.item.album}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <PlatformBadges platforms={itemPlatforms(m.item)} />
+                        </li>
+                      ))}
+                    </ul>
                   )}
-                </div>
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>

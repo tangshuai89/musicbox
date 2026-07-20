@@ -50,14 +50,16 @@ export class QqAuthStrategy {
       );
     }
 
-    // best-effort 拉昵称/头像；失败只用默认，不影响登录
+    // best-effort 拉昵称/头像 + 绿钻状态；失败只用默认，不影响登录
     let nickname = 'QQ 音乐用户';
     let avatarUrl = '';
+    let qqVip: boolean | undefined;
     try {
       const profile = await this.fetchProfileBestEffort(cookie, uin);
       if (profile) {
         nickname = profile.nickname || nickname;
         avatarUrl = profile.avatarUrl || '';
+        qqVip = profile.vip;
       }
     } catch (err) {
       this.logger.warn(
@@ -75,6 +77,7 @@ export class QqAuthStrategy {
       qqCookies: extraCookies,
       nickname,
       avatarUrl,
+      qqVip,
     };
   }
 
@@ -83,13 +86,43 @@ export class QqAuthStrategy {
   }
 
   /**
-   * 尽力拉一次用户资料。用 QQ 音乐个人主页接口 get_user_detail_info（返回
-   * 昵称/头像）。失败返回 null，让上层用默认昵称。
+   * QQ 音乐 map_userinfo 里可能表示"绿钻会员"的字段（不同版本字段名不一）。
+   * 任一 ≥ 1 / true → 判定为 VIP。拿不到任何一个 → 返回 undefined（未知）。
+   */
+  private static readonly VIP_FIELDS = [
+    'ivip',
+    'isVip',
+    'is_vip',
+    'vip',
+    'svip',
+    'is_green',
+    'green',
+    'yellow_vip',
+    'lvip',
+  ];
+
+  private detectVip(entry: Record<string, unknown>): boolean | undefined {
+    let sawField = false;
+    for (const f of QqAuthStrategy.VIP_FIELDS) {
+      const v = entry[f];
+      if (v === undefined || v === null) continue;
+      sawField = true;
+      if (typeof v === 'number' && v >= 1) return true;
+      if (typeof v === 'boolean' && v) return true;
+      if (typeof v === 'string' && /^(1|true|yes)$/i.test(v)) return true;
+    }
+    // 见到了 vip 字段但都是"非会员"值 → 明确 false；一个都没见到 → 未知。
+    return sawField ? false : undefined;
+  }
+
+  /**
+   * 尽力拉一次用户资料（昵称/头像 + 绿钻状态）。用 QQ 音乐 get_user_baseinfo_v2。
+   * 失败返回 null，让上层用默认昵称、VIP 未知。
    */
   private async fetchProfileBestEffort(
     cookie: string,
     uin?: string,
-  ): Promise<{ nickname: string; avatarUrl: string } | null> {
+  ): Promise<{ nickname: string; avatarUrl: string; vip?: boolean } | null> {
     if (!uin) return null;
     const body = {
       comm: { ct: 24, cv: 0 },
@@ -129,9 +162,19 @@ export class QqAuthStrategy {
       const map = json.req_0?.data?.map_userinfo;
       const first = map ? Object.values(map)[0] : undefined;
       if (first?.nick) {
+        const vip = this.detectVip(first as Record<string, unknown>);
+        // 打日志方便核对：若 VIP 检测没命中（vip=undefined），这行会列出
+        // map_userinfo 的实际字段名，贴出来就能把 VIP_FIELDS 补准。
+        this.logger.log(
+          `qq profile: nick="${first.nick}" vip=${vip ?? 'unknown'}` +
+            (vip === undefined
+              ? ` (userinfo keys: ${Object.keys(first as object).join(',')})`
+              : ''),
+        );
         return {
           nickname: first.nick,
           avatarUrl: first.headpic ?? first.avatar ?? '',
+          vip,
         };
       }
     } catch {

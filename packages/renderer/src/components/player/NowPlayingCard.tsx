@@ -7,6 +7,8 @@ interface Props {
   loading: boolean;
   playing: boolean;
   accountName: string;
+  /** 请求音质是 VIP 试听、已自动降到标准播放 → QUALITY 如实显示"标准(试听回退)"。 */
+  trialFellBack?: boolean;
 }
 
 /** The Now Playing info card — a 2×2 grid of source / quality / status / account. */
@@ -16,6 +18,7 @@ export default function NowPlayingCard({
   loading,
   playing,
   accountName,
+  trialFellBack,
 }: Props) {
   return (
     <div className="glass-card side-card">
@@ -27,7 +30,11 @@ export default function NowPlayingCard({
         </div>
         <div className="now-playing-cell">
           <div className="now-playing-cell-label">Quality</div>
-          <div className="now-playing-cell-value">{QQ_QUALITY_LABELS[qqQuality]}</div>
+          <div className="now-playing-cell-value">
+            {trialFellBack
+              ? `${QQ_QUALITY_LABELS.standard} (试听回退)`
+              : QQ_QUALITY_LABELS[qqQuality]}
+          </div>
         </div>
         <div className="now-playing-cell">
           <div className="now-playing-cell-label">Status</div>

@@ -198,8 +198,10 @@
   @include flex-center;
   font-family: var(--font-display);
   font-size: 96px;
-  color: var(--text-tertiary);
-  opacity: 0.4;
+  // Sits over the generated gradient (see placeholderCover) — a soft white
+  // glyph reads cleanly on any hue, unlike the tertiary grey used pre-gradient.
+  color: rgba(255, 255, 255, 0.55);
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
 }
 
 .cover-meta {

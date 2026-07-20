@@ -18,10 +18,34 @@ import { QqQuality } from './qq.provider';
  *   - 垃圾桶:        POST /api/radio/trash/add
  *
  * 未登录/cookie 过期时接口返回 { code: 301 }。
+ *
+ * ⚠️ 写接口风控（2026-07 实测，隔离过变量）：读接口（search / radio/get /
+ * fetchLiked）服务端直连放行，但**写接口**（radio/like 红心、radio/trash 垃圾桶）
+ * 会被拦成 { code: -460, message: "检测到您的网络环境存在风险" }。两个关键因素
+ * （见 apiCall 的实现）：
+ *   1. **cookie 里的 `appver`（决定性）**：缺了它写接口必 -460；加上 appver=8.9.70
+ *      → code=200。真实客户端总带版本号，服务端直连也必须带。
+ *   2. **realIP header（X-Real-IP / X-Forwarded-For = 国内 IP）**：进一步压 405
+ *      「操作频繁」限流——有 realIP 时快速连点也 0 失败，没有时偶发 405。
+ *   外加 csrf_token 参数对齐 __csrf cookie（写接口通用要求）。
+ *   坑：只加 realIP 不加 appver（本项目前一版就是这样）仍然 -460——之前误以为
+ *   realIP 是解药，是因为手测的 cookie 恰好带了 appver 把它掩盖了。
+ *
+ * ⚠️ 写接口"操作频繁"（2026-07 实测）：极快速重复提交时，HTTP 200 但 body 是
+ * { code: 405, message: "操作频繁，请稍候再试" } —— 网易云防抖阈值。这里当成
+ * 普通失败返回 false，让同步队列按指数退避（见 LikeSyncQueue.BACKOFF_BASE_MS）
+ * 重试，不要在 provider 层吞掉。appver + realIP 齐全后正常点击几乎不会触发。
  */
 
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+
+/**
+ * -460/405 风控用的国内 IP（广东电信段）。搭配 cookie 里的 appver 一起，把
+ * 服务端直连写接口的 -460 和 405 限流压下去；读接口不受影响，反而可能顺带
+ * 解锁部分区域限制。实测该 IP 可用；若被拦换一个国内段即可。
+ */
+const NETEASE_REAL_IP = '116.25.146.177';
 
 interface NeteaseSong {
   id: number;
@@ -71,6 +95,9 @@ interface SongDetailV3Response {
     id: number;
     al?: { id: number; name: string; picUrl?: string };
   }[];
+  /** 与 songs 平行的权限数组。`pl` = 当前用户可播的最大位率（bps），
+   *  `pl<=0` 表示这首歌当前账号放不了全曲（无版权 / VIP 独占 / 只给试听）。 */
+  privileges?: { id: number; pl?: number; fee?: number; st?: number }[];
 }
 
 /** QQ 音质档位 → 网易云 level。standard→standard，high→exhigh(≈320)，
@@ -243,23 +270,29 @@ export class NeteaseMusicProvider {
       duration: Math.round((s.duration ?? 0) / 1000),
       liked: false,
     }));
-    // /api/search/get/web 不返回专辑封面，批量补一发 song/detail 拿 al.picUrl。
-    const covers = await this.fetchCovers(
+    // /api/search/get/web 不返回封面，也不含权限；批量补一发 v3 song/detail 拿
+    // al.picUrl（封面）+ privilege（可播性，见 vipLocked）。
+    const enrich = await this.fetchEnrichment(
       session,
       tracks.map((t) => t.id),
     );
     return tracks.map((t) => ({
       ...t,
-      coverUrl: covers.get(t.id) ?? t.coverUrl,
+      coverUrl: enrich.get(t.id)?.cover ?? t.coverUrl,
+      vipLocked: enrich.get(t.id)?.vipLocked,
     }));
   }
 
-  /** 批量取封面（search/get/web 不含 al.picUrl）。失败不影响搜索结果。 */
-  private async fetchCovers(
+  /**
+   * 批量取封面 + 权限（search/get/web 两者都不含）。失败不影响搜索结果。
+   * `vipLocked` 来自 `privilege.pl`：`pl<=0` = 当前账号放不了全曲（无版权 / VIP
+   * 独占 / 只给试听）——这是**用户维度**的判断，比 QQ 的歌级 pay_play 更准。
+   */
+  private async fetchEnrichment(
     session: ProviderSession,
     ids: string[],
-  ): Promise<Map<string, string>> {
-    const map = new Map<string, string>();
+  ): Promise<Map<string, { cover?: string; vipLocked?: boolean }>> {
+    const map = new Map<string, { cover?: string; vipLocked?: boolean }>();
     if (!ids.length) return map;
     try {
       const c = JSON.stringify(ids.map((id) => ({ id: Number(id) })));
@@ -269,13 +302,18 @@ export class NeteaseMusicProvider {
         { c },
       );
       for (const s of data.songs ?? []) {
-        if (s.al?.picUrl) {
-          // ?param=300y300 → CDN 缩放到合适尺寸，省带宽。
-          map.set(String(s.id), `${s.al.picUrl}?param=300y300`);
-        }
+        // ?param=300y300 → CDN 缩放到合适尺寸，省带宽。
+        map.set(String(s.id), {
+          cover: s.al?.picUrl ? `${s.al.picUrl}?param=300y300` : undefined,
+        });
+      }
+      for (const p of data.privileges ?? []) {
+        const entry = map.get(String(p.id)) ?? {};
+        entry.vipLocked = !(typeof p.pl === 'number' && p.pl > 0);
+        map.set(String(p.id), entry);
       }
     } catch (err) {
-      this.logger.warn(`netease cover fetch failed: ${(err as Error).message}`);
+      this.logger.warn(`netease enrich fetch failed: ${(err as Error).message}`);
     }
     return map;
   }
@@ -330,7 +368,7 @@ export class NeteaseMusicProvider {
     songId: string,
     liked: boolean,
   ): Promise<boolean> {
-    const data = await this.apiCall<{ code: number }>(
+    const data = await this.apiCall<{ code: number; message?: string }>(
       session,
       'https://music.163.com/api/radio/like',
       {
@@ -340,6 +378,8 @@ export class NeteaseMusicProvider {
         time: '3',
       },
     );
+    // 405 = "操作频繁"——重复提交同一首歌的同方向 like/unlike（目标状态已达成）
+    // / 真实失败。队列拿到 false 后会按指数退避重试。
     return data.code === 200;
   }
 
@@ -381,9 +421,17 @@ export class NeteaseMusicProvider {
     endpoint: string,
     payload: Record<string, string>,
   ): Promise<T> {
+    // appver 是解 -460 风控的关键（2026-07 实测，比 realIP 更决定性）：写接口
+    // 缺了它必 -460，加上后 code=200。真实网易云客户端总会带这个版本号，服务端
+    // 直连也必须带。os=pc + realIP header 一起把 -460 和 405 限流都压下去。
     const cookie =
-      `MUSIC_U=${session.musicU}; os=pc` +
+      `MUSIC_U=${session.musicU}; os=pc; appver=8.9.70` +
       (session.csrfToken ? `; __csrf=${session.csrfToken}` : '');
+
+    // 写接口（radio/like、radio/trash）需要 csrf_token 参数与 __csrf cookie 对齐；
+    // 读接口会忽略这个多余参数，所以统一带上，无副作用。
+    const body: Record<string, string> = { ...payload };
+    if (session.csrfToken) body.csrf_token = session.csrfToken;
 
     let text = '';
     let status = 0;
@@ -397,8 +445,12 @@ export class NeteaseMusicProvider {
           Origin: 'https://music.163.com',
           Accept: 'application/json, text/plain, */*',
           Cookie: cookie,
+          // -460「网络环境存在风险」绕过：服务端直连的写接口（红心/垃圾桶）会被
+          // 网易云风控拦截，伪造一个国内 realIP 即可放行（见 NETEASE_REAL_IP）。
+          'X-Real-IP': NETEASE_REAL_IP,
+          'X-Forwarded-For': NETEASE_REAL_IP,
         },
-        body: new URLSearchParams(payload).toString(),
+        body: new URLSearchParams(body).toString(),
         redirect: 'manual',
       });
       status = res.status;

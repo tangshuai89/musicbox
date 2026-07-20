@@ -9,6 +9,14 @@ export interface SourceInfo {
   url: string;
   /** QQ 高音质取流用 media_mid（standard 不需要，high/lossless 必须）。 */
   mediaMid?: string;
+  /**
+   * 当前会话在这个源上大概率**放不了全曲**（VIP 独占 / 付费 / 只给试听片段）。
+   * 由 provider 从接口的付费/权限字段解析：
+   *  - netease：`privilege.pl <= 0`（用户维度可播位率为 0 → 试听/无权限）
+   *  - QQ：`pay.pay_play === 1`（需绿钻才能完整播放）
+   * `undefined` = 未知（按可播处理）。selectBestSource 会**优先避开** vipLocked 的源，
+   * 只有全部源都锁时才退回它，避免"选了 VIP 源播成 30s 试听"。 */
+  vipLocked?: boolean;
 }
 
 /** 去重合并后的一条搜索结果。 */

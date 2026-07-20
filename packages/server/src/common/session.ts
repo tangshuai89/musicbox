@@ -21,6 +21,12 @@ export interface ProviderSession {
    * '5381'（DJB2 of ""），favorites 仍能走（cookie 才是真鉴权）。
    */
   qqCookies?: Record<string, string>;
+  /**
+   * 是否 QQ 音乐绿钻会员（VIP）。登录时 best-effort 拉一次存下来。
+   * 决定 pay_play=1 的歌是否标 vipLocked：绿钻能播全曲 → 不锁；非绿钻 → 锁。
+   * `undefined` = 未知（老 session / 拉取失败）→ 按非会员处理（pay_play 生效），
+   * 与本功能上线前的行为一致，重新登录后会填上。 */
+  qqVip?: boolean;
   // NetEase
   musicU?: string;
   csrfToken?: string;

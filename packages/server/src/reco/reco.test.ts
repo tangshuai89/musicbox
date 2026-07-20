@@ -189,4 +189,166 @@ const svc = new RecoService(fakeConfig, fakeStorage, fakeSessionService, fakeMus
   console.log('✅ 12. status: 无库无 key 都 false');
 }
 
-console.log('\n🎉 全部 12 个测试通过');
+// ── 13. 推荐去重：exclude（auto-continue 避免续播复读）────
+{
+  const lib = [{ title: '晴天', artist: '周杰伦' } as any];
+  const exclude = [{ title: '夜曲', artist: '周杰伦' }]; // 上一批推过
+  const raw = [
+    { title: '晴天', artist: '周杰伦' }, // 库里 → 去
+    { title: '夜曲', artist: '周杰伦' }, // exclude → 去
+    { title: '稻香', artist: '周杰伦' }, // 新的 → 留
+  ];
+  const dedup = svc['dedupAgainstLibrary'](raw, lib, exclude);
+  assert.deepStrictEqual(
+    dedup.map((d: any) => d.title),
+    ['稻香'],
+    'exclude 里的歌应和库一样被排除',
+  );
+  // exclude 也要进 prompt 的"请勿再推荐"清单。
+  const messages = svc['buildPrompt'](lib, { count: 5, exclude });
+  assert.ok(
+    messages[1].content.includes('不要再推荐') &&
+      messages[1].content.includes('夜曲'),
+    'exclude 应进 user prompt 的避让清单',
+  );
+  console.log('✅ 13. 推荐去重: exclude 排除续播复读 + 进 prompt 避让');
+}
+
+// ── fillPlatforms 用的最小 UnifiedSearchItem 构造 ──────────
+function uItem(id: string, title: string, artist: string) {
+  return {
+    id,
+    title,
+    artist,
+    album: '',
+    coverUrl: '',
+    duration: 0,
+    sources: [],
+    bestSource: 'qq',
+  } as any;
+}
+
+// fillPlatforms 是 async；ts-node(commonjs) 不允许顶层 await，包进 IIFE。
+void (async () => {
+  // ── 14. fillPlatforms 匹配校验：跳过不匹配首条，取真正命中的（#1）──
+  {
+    (fakeMusic as any).searchUnified = async (_s: any, q: string) => {
+      if (q.includes('感電')) {
+        return {
+          items: [
+            uItem('wrong', '感電 (Cover)', '某翻唱歌手'), // 歌名含但歌手对不上 → 拒
+            uItem('right', '感電', '米津玄師'), // 正主 → 取这个
+          ],
+        };
+      }
+      return { items: [] };
+    };
+    const filled = await svc['fillPlatforms'](
+      {} as any,
+      [{ title: '感電', artist: '米津玄師', reason: '因为好听' }],
+      5,
+    );
+    assert.strictEqual(filled.length, 1);
+    assert.strictEqual(filled[0].id, 'right', '应取真正匹配的正主，不是首条翻唱');
+    assert.ok(filled[0].album.includes('因为好听'), 'reason 应进 album');
+    console.log('✅ 14. fillPlatforms: 匹配校验取正主，不塞同名翻唱');
+  }
+
+  // ── 15. fillPlatforms：全无匹配 → 丢弃不塞错歌（#1）─────────
+  {
+    (fakeMusic as any).searchUnified = async () => ({
+      items: [uItem('x', '完全不同的歌', '别的歌手')],
+    });
+    const filled = await svc['fillPlatforms'](
+      {} as any,
+      [{ title: '感電', artist: '米津玄師' }],
+      5,
+    );
+    assert.strictEqual(filled.length, 0, '首条不匹配又无其它候选 → 丢弃');
+    console.log('✅ 15. fillPlatforms: 无匹配则丢弃，不塞错歌');
+  }
+
+  // ── 16. fillPlatforms：跳过搜不到的、用后面的补位且保序（#2/#4）──
+  {
+    (fakeMusic as any).searchUnified = async (_s: any, q: string) => {
+      if (q.startsWith('A ')) return { items: [uItem('a', 'A', 'x')] };
+      if (q.startsWith('B ')) return { items: [] }; // 搜不到
+      if (q.startsWith('C ')) return { items: [uItem('c', 'C', 'y')] };
+      return { items: [] };
+    };
+    const filled = await svc['fillPlatforms'](
+      {} as any,
+      [
+        { title: 'A', artist: 'x' },
+        { title: 'B', artist: 'z' }, // 搜不到 → 跳过
+        { title: 'C', artist: 'y' },
+      ],
+      2,
+    );
+    assert.deepStrictEqual(
+      filled.map((f: any) => f.id),
+      ['a', 'c'],
+      '跳过搜不到的 B，用 C 补位到 2 首，且保持推荐原始顺序',
+    );
+    console.log('✅ 16. fillPlatforms: 跳过搜空 + 补位到 count + 保序');
+  }
+
+  // ── 17. 版本偏好：有录音室原版时优先，DJ 版排前面也不选（晴天 bug）──
+  {
+    (fakeMusic as any).searchUnified = async (_s: any, q: string) => {
+      if (q.includes('晴天')) {
+        return {
+          items: [
+            uItem('dj', '晴天 (DJ版)', '周杰伦'), // 排在前面
+            uItem('studio', '晴天', '周杰伦'), // 录音室原版
+          ],
+        };
+      }
+      return { items: [] };
+    };
+    const filled = await svc['fillPlatforms'](
+      {} as any,
+      [{ title: '晴天', artist: '周杰伦' }],
+      5,
+    );
+    assert.strictEqual(filled.length, 1);
+    assert.strictEqual(filled[0].id, 'studio', '有正常版应优先，即使 DJ 版排前面');
+    console.log('✅ 17. 版本偏好: 录音室原版优先于 DJ 版');
+  }
+
+  // ── 18. 版本偏好：只有 DJ 版且用户没点名 → 丢弃，让上层补位 ────
+  {
+    (fakeMusic as any).searchUnified = async (_s: any, q: string) =>
+      q.includes('晴天')
+        ? { items: [uItem('dj', '晴天 (DJ加速版)', '周杰伦')] }
+        : { items: [] };
+    const filled = await svc['fillPlatforms'](
+      {} as any,
+      [{ title: '晴天', artist: '周杰伦' }],
+      5,
+    );
+    assert.strictEqual(filled.length, 0, '只有 DJ 版且没点名 → 丢弃，不塞 DJ 版');
+    console.log('✅ 18. 版本偏好: 只有坏版本则丢弃');
+  }
+
+  // ── 19. 版本偏好：rec 自己点名要 Remix → 豁免惩罚，照给 ────────
+  {
+    (fakeMusic as any).searchUnified = async (_s: any, q: string) =>
+      q.includes('某歌')
+        ? { items: [uItem('rmx', '某歌 (Remix)', 'X')] }
+        : { items: [] };
+    const filled = await svc['fillPlatforms'](
+      {} as any,
+      [{ title: '某歌 (Remix)', artist: 'X' }],
+      5,
+    );
+    assert.strictEqual(filled.length, 1, 'rec 点名要 Remix → 不惩罚，照给');
+    assert.strictEqual(filled[0].id, 'rmx');
+    console.log('✅ 19. 版本偏好: rec 点名要某版本则豁免');
+  }
+
+  console.log('\n🎉 全部 19 个测试通过');
+})().catch((err) => {
+  console.error('❌ reco.test 失败:', err);
+  process.exit(1);
+});

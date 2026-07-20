@@ -24,6 +24,7 @@ interface TrackOpts {
   audioUrl?: string;
   duration?: number;
   mediaMid?: string;
+  vipLocked?: boolean;
 }
 function makeTrack(
   provider: string,
@@ -43,6 +44,7 @@ function makeTrack(
     duration: opts.duration ?? 0,
     liked: false,
     mediaMid: opts.mediaMid,
+    vipLocked: opts.vipLocked,
   };
 }
 
@@ -288,4 +290,79 @@ function makeTrack(
   console.log('✅ 12. fan-out unlike 幂等（不动未心过的平台）');
 }
 
-console.log('\n🎉 全部 13 个测试通过');
+// ── 13. bestSource 避开 VIP 锁源：QQ 锁、网易云免费 → 选网易云 ──────
+{
+  const all = [
+    {
+      track: makeTrack('qq', 'qq-x', '简单爱', '周杰伦', { vipLocked: true }),
+      platform: 'qq',
+    },
+    {
+      track: makeTrack('netease', 'ne-x', '简单爱', '周杰伦', {
+        vipLocked: false,
+      }),
+      platform: 'netease',
+    },
+  ];
+  const deduped = dedupTracks(all);
+  const items = buildUnifiedItems(deduped, all);
+  assert.strictEqual(items.length, 1);
+  assert.strictEqual(
+    items[0].bestSource,
+    'netease',
+    'QQ 是 VIP 锁、网易云免费全曲 → bestSource 应避开 QQ 选网易云',
+  );
+  console.log('✅ 13. bestSource 避开 VIP 锁源（选能出全曲的平台）');
+}
+
+// ── 14. 全部 VIP 锁 → 退回平台优先级（best-effort 播试听）──────────
+{
+  const all = [
+    {
+      track: makeTrack('qq', 'qq-y', '烟花易冷', '周杰伦', { vipLocked: true }),
+      platform: 'qq',
+    },
+    {
+      track: makeTrack('netease', 'ne-y', '烟花易冷', '周杰伦', {
+        vipLocked: true,
+      }),
+      platform: 'netease',
+    },
+  ];
+  const deduped = dedupTracks(all);
+  const items = buildUnifiedItems(deduped, all);
+  assert.strictEqual(
+    items[0].bestSource,
+    'qq',
+    '全锁时退回平台优先级（qq），行为与之前一致',
+  );
+  console.log('✅ 14. 全 VIP 锁 → 退回平台优先级');
+}
+
+// ── 15. VIP 锁的 QQ + Deezer 预览 → 仍选 QQ（不被 Deezer 预览顶掉）─────
+// 回归：tier-1「非锁」只在完整曲流平台(qq/netease)间挑；Deezer 匿名是 30s
+// 预览，不能仅因未标 VIP 锁就盖过 QQ 源（否则 QQ-only 用户会被切到更差的预览）。
+{
+  const all = [
+    {
+      track: makeTrack('qq', 'qq-z', '蒲公英的约定', '周杰伦', {
+        vipLocked: true,
+      }),
+      platform: 'qq',
+    },
+    {
+      track: makeTrack('deezer', 'de-z', '蒲公英的约定', '周杰伦'),
+      platform: 'deezer',
+    },
+  ];
+  const deduped = dedupTracks(all);
+  const items = buildUnifiedItems(deduped, all);
+  assert.strictEqual(
+    items[0].bestSource,
+    'qq',
+    'QQ 锁 + Deezer 预览 → 仍退回 QQ（Deezer 预览不算全曲源，不能顶掉）',
+  );
+  console.log('✅ 15. VIP 锁 QQ + Deezer 预览 → 不被预览顶掉');
+}
+
+console.log('\n🎉 全部 16 个测试通过');

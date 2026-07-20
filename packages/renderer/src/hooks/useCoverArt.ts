@@ -1,6 +1,7 @@
 import { useCallback, useRef, type RefObject } from 'react';
 import { API_ORIGIN } from '../api';
 import { resetCoverColor, setCoverColor } from '../lib/coverColor';
+import { placeholderCover } from '../lib/placeholderCover';
 
 /**
  * Pull the dominant colour out of a cover-art image URL and apply it to
@@ -96,5 +97,24 @@ export function useCoverArt() {
     );
   }, []);
 
-  return { bgLayerRef, coverBackdropRef, presentCover };
+  /**
+   * Paint a generated placeholder for a track with no cover URL. Bumps the
+   * epoch first so any in-flight applyCoverImage from the previous (cover'd)
+   * track bails without clobbering this gradient. Writes the gradient onto
+   * the same two divs a real cover uses, and drives --cover-accent from the
+   * matching colour so the halo / bass breathing still tint sensibly.
+   */
+  const presentPlaceholder = useCallback((seed: string) => {
+    coverEpochRef.current += 1;
+    const { background, accent } = placeholderCover(seed);
+    if (coverBackdropRef.current) {
+      coverBackdropRef.current.style.backgroundImage = background;
+    }
+    if (bgLayerRef.current) {
+      bgLayerRef.current.style.backgroundImage = background;
+    }
+    setCoverColor(accent[0], accent[1], accent[2]);
+  }, []);
+
+  return { bgLayerRef, coverBackdropRef, presentCover, presentPlaceholder };
 }

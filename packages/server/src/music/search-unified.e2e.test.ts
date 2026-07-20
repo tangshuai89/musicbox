@@ -52,8 +52,12 @@ const spotify = {
   },
 };
 const match = {};
-// 同步队列 stub：搜索路径用不到，只需让构造函数里的 registerProcessor 不炸。
-const likeSync = { registerProcessor: () => {}, enqueue: () => {} };
+// 同步队列 stub：搜索路径用不到，只需让构造函数里的 register* 不炸。
+const likeSync = {
+  registerProcessor: () => {},
+  registerDiscoverResolver: () => {},
+  enqueue: () => {},
+};
 
 const svc = new MusicService(
   fakeStorage,

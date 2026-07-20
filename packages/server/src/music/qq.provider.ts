@@ -76,6 +76,9 @@ interface SearchResponse {
           size_320mp3?: number;
           size_flac?: number;
         };
+        // 付费信息：pay_play=1 表示需绿钻才能完整播放（非会员只给试听）。
+        // 字段名两种写法都见过，都兜住；拿不到就当不锁（不回归）。
+        pay?: { pay_play?: number; payplay?: number };
       }>;
     };
   };
@@ -493,6 +496,10 @@ export class QqMusicProvider {
       duration: s.interval ?? 0,
       liked: false,
       mediaMid: s.file?.strMediaMid ?? s.file?.media_mid ?? '',
+      // pay_play=1 = 这首需绿钻才能完整播放。但能不能播全曲取决于**当前用户**是不是
+      // 绿钻：绿钻用户照样全曲 → 不标锁；非绿钻（或未知/未登录）→ 标 vipLocked，选源时避开。
+      vipLocked:
+        (s.pay?.pay_play ?? s.pay?.payplay) === 1 && session.qqVip !== true,
     }));
   }
 

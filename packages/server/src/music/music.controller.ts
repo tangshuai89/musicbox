@@ -10,12 +10,27 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
-import { MusicService } from './music.service';
+import { MusicService, type LikeMeta } from './music.service';
 import { normalizeProvider, MusicProvider } from '../common/provider';
 import { SessionService } from '../common/session';
 import { DeezerMusicProvider } from './deezer.provider';
 import { QqQuality } from './qq.provider';
-import type { FanOutLikeResponse } from './types';
+import type { FanOutLikeResponse, SourceInfo } from './types';
+
+/** 从请求体里宽松解析跨平台匹配元数据。缺字段 / 类型不对 → undefined，
+ *  服务端退化成「只写已有 source」的老行为（不因 meta 脏数据 400）。 */
+function parseMeta(m: unknown): LikeMeta | undefined {
+  if (!m || typeof m !== 'object') return undefined;
+  const o = m as Record<string, unknown>;
+  if (typeof o.title !== 'string' || typeof o.artist !== 'string') {
+    return undefined;
+  }
+  const duration =
+    typeof o.duration === 'number' && Number.isFinite(o.duration)
+      ? o.duration
+      : 0;
+  return { title: o.title, artist: o.artist, duration };
+}
 
 @Controller('music')
 export class MusicController {
@@ -109,6 +124,7 @@ export class MusicController {
       mergedId?: string;
       sources?: Array<{ platform: string; trackId: string }>;
       liked?: boolean;
+      meta?: unknown;
     },
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
@@ -143,6 +159,7 @@ export class MusicController {
       body.mergedId,
       sources,
       body.liked,
+      parseMeta(body.meta),
     );
   }
 
@@ -160,6 +177,7 @@ export class MusicController {
     @Body() body: {
       mergedId?: string;
       sources?: Array<{ platform: string; trackId: string }>;
+      meta?: unknown;
     },
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
@@ -190,6 +208,7 @@ export class MusicController {
       session,
       body.mergedId,
       sources,
+      parseMeta(body.meta),
     );
   }
 
@@ -197,6 +216,7 @@ export class MusicController {
   async like(
     @Param('trackId') trackId: string,
     @Query('provider') provider: string,
+    @Body() body: { meta?: unknown } | undefined,
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
@@ -205,6 +225,7 @@ export class MusicController {
       session,
       normalizeProvider(provider),
       trackId,
+      parseMeta(body?.meta),
     );
   }
 
@@ -331,6 +352,44 @@ export class MusicController {
    */
   private static readonly STREAM_UA =
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+
+  /**
+   * 实时跨平台匹配：给定当前 track 元数据，去其余已登录平台搜同名同时长的
+   * 等价曲目，返回首个命中（含后端代理 src 路径）。renderer 在 code=4 时
+   * 调这个端点拿到 fallback 源后直接 play()。
+   *
+   * 严格匹配：normalizeKey(歌名+歌手) + duration ±3s。命中优先级 qq > netease
+   * > deezer > spotify（沿用 server 的 PLAY_PRIORITY）。
+   *
+   * 不写 liked 状态（避免和同步队列的 discover 步双写）；只读 + 返回。
+   * 未登录 / 搜不到 / 异常 → 200 + { source: null }（不 404，避免 renderer 死循环）。
+   */
+  @Get('equivalents')
+  async equivalents(
+    @Query('provider') provider: string,
+    @Query('title') title: string,
+    @Query('artist') artist: string,
+    @Query('duration') duration: string,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ source: SourceInfo | null }> {
+    const seedProvider = normalizeProvider(provider);
+    const dur = Number(duration);
+    if (!title && !artist) {
+      return { source: null };
+    }
+    const session = this.sessionService.resolve(req, res);
+    const source = await this.musicService.findPlayableEquivalent(
+      session,
+      seedProvider,
+      {
+        title: title ?? '',
+        artist: artist ?? '',
+        duration: Number.isFinite(dur) ? dur : 0,
+      },
+    );
+    return { source };
+  }
 
   @Get('stream/:provider/:trackId')
   async stream(

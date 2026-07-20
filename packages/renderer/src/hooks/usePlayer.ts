@@ -14,6 +14,7 @@ import {
   dislike,
   dislikeMerged,
   pickPlayableTrack,
+  findEquivalentSource,
   API_ORIGIN,
 } from '../api';
 import type {
@@ -21,6 +22,7 @@ import type {
   MusicProvider,
   QqQuality,
   UnifiedSearchItem,
+  UnifiedSourceInfo,
 } from '../api';
 import {
   readStoredProvider,
@@ -32,6 +34,56 @@ import {
   writeStoredDeezerPreset,
 } from '../lib/storage';
 import { useCoverArt } from './useCoverArt';
+
+/**
+ * 跨平台降级的优先级（镜像 server 的 PLAY_PRIORITY）：某首歌的当前源播放
+ * 失败（无版权 / 取流 502 → <audio> code=4）时，按这个顺序在同一首统一
+ * track 的其它平台 source 里挑下一个能播的。QQ/网易云是完整曲流优先，
+ * Deezer/Spotify 是 30s 预览兜底。
+ */
+const FALLBACK_PRIORITY: MusicProvider[] = [
+  'qq',
+  'netease',
+  'deezer',
+  'spotify',
+];
+
+/**
+ * 「完整曲流」平台：QQ / 网易云给的是全曲。Deezer/Spotify(非 Premium) 本身就是
+ * 30s 预览，**不能**当作 VIP 试听升级的目标（换过去还是 30s，白换）。
+ */
+const FULL_SONG_PROVIDERS: MusicProvider[] = ['qq', 'netease'];
+
+/** VIP 试听判定阈值：实际音频 ≤ TRIAL_MAX_SEC 秒、且元数据全长比它长 GAP 以上，
+ *  就认定当前源是被 VIP 锁成的试听片段（QQ 试听常见 30s / 60s）。
+ *  - MAX 放到 120：60s 试听的 audio.duration 常是 60.x（曾用 60 卡边界漏检）；
+ *    真正的判据是 GAP，MAX 只挡"元数据错得离谱"的极端，放宽无副作用。
+ *  - GAP=45 大到没有正常歌会误判：元数据是真实全长，正常播放时 audio.duration
+ *    与它只差 1-2s；差 45s+ 只可能是被截断的试听。 */
+const TRIAL_MAX_SEC = 120;
+const TRIAL_GAP_SEC = 45;
+
+/**
+ * Parse a page of unified search / reco items into a playable queue, dropping
+ * items with no playable source and keeping `tracks` ALIGNED with `unifiedItems`
+ * (same index → same song) so per-song ❤ detect / fan-out maps correctly.
+ * Shared by playSearch (initial queue) and loadNextTrack (reco next batch).
+ */
+function parsePlayableQueue(items: UnifiedSearchItem[]): {
+  tracks: Track[];
+  unifiedItems: UnifiedSearchItem[];
+} {
+  const tracks: Track[] = [];
+  const unifiedItems: UnifiedSearchItem[] = [];
+  for (const it of items) {
+    const t = pickPlayableTrack(it);
+    if (t) {
+      tracks.push(t);
+      unifiedItems.push(it);
+    }
+  }
+  return { tracks, unifiedItems };
+}
 
 /**
  * The playback core: everything that touches the <audio> element, the Web
@@ -72,6 +124,8 @@ export function usePlayer(
   const [error, setError] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [fanOutCount, setFanOutCount] = useState<number>(0);
+  // 本首歌是否因请求音质是 VIP 试听、被自动降到标准音质播放（UI 如实展示）。
+  const [trialFellBack, setTrialFellBack] = useState(false);
 
   const [qqQuality, setQqQuality] = useState<QqQuality>(() => readStoredQuality());
   // presentTrack reads the current quality via ref to avoid a dep on it.
@@ -93,6 +147,13 @@ export function usePlayer(
     tracks: Track[];
     idx: number;
     unifiedItems?: UnifiedSearchItem[];
+    /**
+     * Reco queues only: fetch the next batch when the last track ends, instead
+     * of looping back to #1. Returns the raw unified items for the next batch
+     * (parsed + appended by loadNextTrack). Search / liked-library queues leave
+     * this undefined and keep the classic looping behaviour.
+     */
+    loadMore?: () => Promise<UnifiedSearchItem[]>;
   } | null>(null);
   // Guards the async detect-liked result: only apply if the queue is still on
   // the same unified track we detected for (avoids a stale detect clobbering a
@@ -107,6 +168,32 @@ export function usePlayer(
   // "切到新歌 → play(newUri)" 和 "同一首暂停后恢复 → resume()"。
   const wpsPlayedIdRef = useRef<string | null>(null);
 
+  // 跨平台自动降级用的三件套：
+  //  - currentUnifiedRef：当前在播这首「统一 track」（含各平台 source）。
+  //    radio 单平台 track 没有 unified item → undefined，降级直接跳过。
+  //  - triedPlatformsRef：本首歌已经试过的平台，防止在 sources 间来回死循环。
+  //  - trackRef：最新 track 的镜像，降级构造 fallback track 时读当前平台 /
+  //    保留红心态，避免把 track 塞进各 effect 的依赖数组。
+  const currentUnifiedRef = useRef<UnifiedSearchItem | undefined>(undefined);
+  const triedPlatformsRef = useRef<Set<MusicProvider>>(new Set());
+  const trackRef = useRef<Track | null>(null);
+  trackRef.current = track;
+  // 本首歌是否已经问过服务端要跨平台等价源（每首歌只问一次，避免死循环）。
+  // 用于「unified item 只有 netease 一个 source、netease 又挂了」时向服务端
+  // 实时匹配一个 QQ/其它平台的可播放源。换新歌时在 presentTrack 里重置。
+  const serverEquivTriedRef = useRef(false);
+  // VIP 30s 试听自动升级用：
+  //  - trialServerTriedRef：本首歌是否已就「试听」问过服务端等价源（每首一次）。
+  //    与 serverEquivTriedRef 分开——试听升级和 code=4 降级是两条独立触发。
+  //  - trialEvaluatedRef：当前这个音源是否已做过试听判定（每次上源一次，防
+  //    onLoadedMetadata/onDurationChange 重复触发；每次 presentTrack 重置）。
+  const trialServerTriedRef = useRef(false);
+  const trialEvaluatedRef = useRef(false);
+  // 本首歌是否已就"试听"降到过标准音质重试（每首一次）。很多 VIP 试听其实是
+  // "无损/极高是 VIP、标准免费全曲"，降标准通常直接拿到全曲；每首歌只降一次，
+  // 标准仍是试听才继续跨平台。换新歌时在 presentTrack 里重置。
+  const forcedStandardRef = useRef(false);
+
   // Web Audio graph — created lazily on the first play (autoplay policy gates
   // AudioContext + MediaElementSource to user gestures). `analyser` is state
   // (not a ref) because the bass RAF effect below reads it as a dependency
@@ -115,7 +202,8 @@ export function usePlayer(
   const mediaSrcRef = useRef<MediaElementAudioSourceNode | null>(null);
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
 
-  const { bgLayerRef, coverBackdropRef, presentCover } = useCoverArt();
+  const { bgLayerRef, coverBackdropRef, presentCover, presentPlaceholder } =
+    useCoverArt();
 
   /**
    * Lazily attach a Web Audio analyser to the live <audio> element.
@@ -166,8 +254,31 @@ export function usePlayer(
 
   // Present a Track to the player: resolve absolute audioUrl, swap cover,
   // set play intent. Shared by the server radio and search-result paths.
+  // `unified`（可选）是这首歌的跨平台源信息：传了它，播放失败时才能自动
+  // 降级到其它平台。radio 单平台 track 不传。
   const presentTrack = useCallback(
-    (next: Track) => {
+    (next: Track, unified?: UnifiedSearchItem) => {
+      // 换歌就重置「已试平台」；同一首歌的跨平台降级复用 presentTrack 但要
+      // 保留记录（否则 netease→qq 失败后又把 netease 当没试过 → 死循环）。
+      const isNewSong =
+        !unified || unified.id !== currentUnifiedRef.current?.id;
+      currentUnifiedRef.current = unified;
+      if (isNewSong) {
+        triedPlatformsRef.current = new Set();
+        serverEquivTriedRef.current = false;
+        trialServerTriedRef.current = false;
+        forcedStandardRef.current = false;
+      }
+      triedPlatformsRef.current.add(next.provider);
+      // 每次上源（含跨平台切换）都要对新源重做一次试听判定。
+      trialEvaluatedRef.current = false;
+      // 新上的源默认按用户选的音质播——清掉"试听回退到标准"的标记。standard
+      // 重载走的是 setTrack（不经 presentTrack），所以那个标记能一直保留到换歌 /
+      // 跨平台换源为止（那两种才经过这里）。
+      setTrialFellBack(false);
+      // 每次上歌/换源都先清掉上一次的报错——切到下一首/降级成功后不该再
+      // 残留旧的 "音频加载失败" 弹窗。真正失败会在 onError 里重新 setError。
+      setError(null);
       let audioUrl =
         next.audioUrl && next.audioUrl.startsWith('/')
           ? API_ORIGIN + next.audioUrl
@@ -190,6 +301,13 @@ export function usePlayer(
         // writes onto the freshly-remounted cover div (key={track.id} makes
         // the cover unmount/remount on every track change).
         presentCover(next.coverUrl);
+      } else {
+        // No artwork → generate a stable gradient placeholder from the song
+        // identity. Also overwrites the previous track's cover in the blurred
+        // bg-layer (which presentCover would otherwise leave stale).
+        presentPlaceholder(
+          next.title || next.artist ? `${next.title}·${next.artist}` : next.id,
+        );
       }
       setTrack({ ...next, audioUrl });
       setCurrentTime(0);
@@ -200,8 +318,206 @@ export function usePlayer(
       // gesture. The graph is built lazily on the first play (onPlay /
       // handlePlayPause). Until then audio plays through the default path.
     },
-    [presentCover, audioRef, wpsRef],
+    [presentCover, presentPlaceholder, audioRef, wpsRef],
   );
+
+  /** 用一个跨平台 source + 展示元数据构造 fallback Track 并重播。同一首歌
+   *  → presentTrack 里 isNewSong=false，triedPlatformsRef / serverEquivTriedRef
+   *  累加不清零，避免死循环。 */
+  const presentFallbackSource = useCallback(
+    (
+      src: UnifiedSourceInfo,
+      unified: UnifiedSearchItem | undefined,
+      display: { title: string; artist: string; album: string; coverUrl: string; duration: number },
+    ) => {
+      const fallback: Track = {
+        id: src.trackId,
+        provider: src.platform,
+        title: display.title,
+        artist: display.artist,
+        album: display.album,
+        coverUrl: display.coverUrl,
+        audioUrl: src.url,
+        duration: display.duration,
+        // 跨平台是同一首歌，红心态一致 —— 保留，别被降级重置成未收藏。
+        liked: trackRef.current?.liked ?? false,
+        mediaMid: src.mediaMid,
+      };
+      console.warn(
+        `[audio] "${display.title}" 在 ${trackRef.current?.provider} 播放失败，` +
+          `自动切到 ${src.platform} 源`,
+      );
+      presentTrack(fallback, unified);
+    },
+    [presentTrack],
+  );
+
+  /**
+   * 当前源播放失败时，自动降级到同一首歌的其它平台源。两级：
+   *  1. **item 内**：unified.sources 里还没试过的平台（快，无网络）。
+   *  2. **服务端实时匹配**：item 只有一个 source（如 netease-only 库条目），
+   *     netease 又挂了 → 问服务端去其余已登录平台搜同名同时长的等价源
+   *     （每首歌只问一次）。这修的正是「突然好想你只有网易云源、code=4 后无源
+   *     可退」的盲点。
+   * 成功切源 → true（onError 不报错）；彻底无源 → false，交调用方报错。
+   */
+  const tryFallbackSource = useCallback(async (): Promise<boolean> => {
+    const unified = currentUnifiedRef.current;
+    const cur = trackRef.current;
+    if (!unified || !cur) return false;
+    const tried = triedPlatformsRef.current;
+    const display = {
+      title: unified.title,
+      artist: unified.artist,
+      album: unified.album,
+      coverUrl: unified.coverUrl,
+      duration: unified.duration,
+    };
+
+    // 1) item 内其它平台 source。
+    const inItem = FALLBACK_PRIORITY.filter((p) => !tried.has(p))
+      .map((p) =>
+        unified.sources.find((s) => s.platform === p && s.hasCopyright),
+      )
+      .find((s): s is UnifiedSourceInfo => Boolean(s));
+    if (inItem) {
+      presentFallbackSource(inItem, unified, display);
+      return true;
+    }
+
+    // 2) 服务端实时跨平台匹配（每首歌一次）。
+    if (serverEquivTriedRef.current) return false;
+    serverEquivTriedRef.current = true;
+    const songId = unified.id; // 快照：await 期间用户可能切歌，回来要校验。
+    try {
+      const src = await findEquivalentSource(cur.provider, {
+        title: unified.title,
+        artist: unified.artist,
+        duration: unified.duration,
+      });
+      // 竞态守卫：await 期间已切到别的歌 → 丢弃结果。
+      if (currentUnifiedRef.current?.id !== songId) return false;
+      if (src && !triedPlatformsRef.current.has(src.platform)) {
+        presentFallbackSource(src, currentUnifiedRef.current, display);
+        return true;
+      }
+    } catch {
+      // 网络/匹配失败 → 静默走报错。
+    }
+    return false;
+  }, [presentFallbackSource]);
+
+  /**
+   * VIP 30s 试听自动升级：QQ/网易云对 VIP 独占曲目会返回 30s 试听片段——音频
+   * **实际时长 ≈30s，但元数据是全长**。检测到后去**其它完整曲流平台**（qq/网易
+   * 云）搜同名等价源换过去，把 30s 试听升级成全曲。与 tryFallbackSource 的区别：
+   *  - 触发点不同：那个是 code=4 播放失败；这个是播成功但被锁成试听片段。
+   *  - 目标平台受限：只认 FULL_SONG_PROVIDERS——Deezer/Spotify 的 30s 是正常预览，
+   *    换过去还是 30s，白换，所以排除（服务端可能返回 spotify，这里拒掉）。
+   * 换源后新音源的 onLoadedMetadata 会再判一次：还是试听 → 试下一个完整平台；
+   * 完整平台都试过仍是试听（两边都 VIP 锁）→ 保持现状，无能为力。
+   */
+  const tryUpgradeFromTrial = useCallback(async (): Promise<void> => {
+    const unified = currentUnifiedRef.current;
+    const cur = trackRef.current;
+    // 需要 unified item 才能安全升级：radio 单平台 track 没有 unified，换源时
+    // presentTrack 会把它当新歌重置 triedPlatformsRef → qq↔netease 来回死循环。
+    // 与 tryFallbackSource 同款约束（radio 本就没有跨平台降级）。
+    if (!unified || !cur) return;
+    const tried = triedPlatformsRef.current;
+    const display = {
+      title: unified.title,
+      artist: unified.artist,
+      album: unified.album,
+      coverUrl: unified.coverUrl,
+      // 用元数据全长——换到新源后若仍是试听，其 audio.duration 会再次远短于它。
+      duration: unified.duration,
+    };
+
+    // 1) item 内其它「完整曲流」平台的源（快，无网络）。要求 !vipLocked——换到
+    //    另一个已知 VIP 锁的源没意义（还是试听），跳过它。
+    const inItem = FULL_SONG_PROVIDERS.filter((p) => !tried.has(p))
+      .map((p) =>
+        unified.sources.find(
+          (s) => s.platform === p && s.hasCopyright && !s.vipLocked,
+        ),
+      )
+      .find((s): s is UnifiedSourceInfo => Boolean(s));
+    if (inItem) {
+      console.warn(
+        `[audio] "${display.title}" 疑似 ${cur.provider} 30s 试听，` +
+          `升级到 ${inItem.platform} 全曲源`,
+      );
+      presentFallbackSource(inItem, unified, display);
+      return;
+    }
+
+    // 2) 服务端实时匹配（每首歌一次），只接受完整曲流平台的结果。
+    if (trialServerTriedRef.current) return;
+    trialServerTriedRef.current = true;
+    const songId = unified.id; // 快照：await 期间可能切歌，回来要校验。
+    try {
+      const src = await findEquivalentSource(cur.provider, {
+        title: display.title,
+        artist: display.artist,
+        duration: display.duration,
+      });
+      // 竞态守卫：await 期间切了别的歌 → 丢弃。
+      if (currentUnifiedRef.current?.id !== songId) return;
+      if (
+        src &&
+        FULL_SONG_PROVIDERS.includes(src.platform) &&
+        !triedPlatformsRef.current.has(src.platform)
+      ) {
+        console.warn(
+          `[audio] "${display.title}" 30s 试听，服务端匹配到 ${src.platform} ` +
+            `全曲源，升级`,
+        );
+        presentFallbackSource(src, currentUnifiedRef.current, display);
+      }
+    } catch {
+      // 匹配失败 → 保持现状（继续放 30s 试听，best-effort）。
+    }
+  }, [presentFallbackSource]);
+
+  /**
+   * 检测到 VIP 试听片段后的处理，两步（先便宜的、再兜底）：
+   *  1. **同平台降标准音质重试**：QQ/网易云很多"试听"其实是"无损/极高是 VIP、
+   *     标准免费全曲"（本次两张截图都是「无损」）。降到标准通常直接拿到全曲，
+   *     还留在用户选的平台。每首歌只降一次（forcedStandardRef）。
+   *  2. **跨平台换完整曲流源**：标准也被锁成试听（整首 VIP）→ 去别的完整平台。
+   * 换源/重载后新音源的 onLoadedMetadata 会再判一次，形成"标准→跨平台"的接力。
+   */
+  const handleTrialDetected = useCallback(async () => {
+    const cur = trackRef.current;
+    if (!cur) return;
+    // 1) 同平台降标准音质重试。
+    if (
+      (cur.provider === 'qq' || cur.provider === 'netease') &&
+      qqQualityRef.current !== 'standard' &&
+      !forcedStandardRef.current
+    ) {
+      forcedStandardRef.current = true;
+      // 去掉已有的 q=xxx 再拼 q=standard（复用 changeQuality 的写法）。
+      const base = cur.audioUrl
+        .replace(/[?&]q=[^&]*/, '')
+        .replace(/[?&]$/, '');
+      const sep = base.includes('?') ? '&' : '?';
+      console.warn(
+        `[audio] "${cur.title}" 疑似 ${qqQualityRef.current} 音质 VIP 试听，` +
+          `先降到标准音质同平台重试`,
+      );
+      // 让重载后的标准源重新做试听判定（setTrack 改 audioUrl 不走 presentTrack）。
+      trialEvaluatedRef.current = false;
+      setTrialFellBack(true); // UI 如实展示"标准(试听回退)"
+      setTrack((prev) =>
+        prev ? { ...prev, audioUrl: `${base}${sep}q=standard` } : prev,
+      );
+      return;
+    }
+    // 2) 跨平台换完整曲流源。
+    await tryUpgradeFromTrial();
+  }, [tryUpgradeFromTrial]);
 
   /**
    * 切歌后的红心检测：查这首统一 track 在各平台的红心情况；任一平台已 ❤ →
@@ -223,7 +539,11 @@ export function usePlayer(
         return;
       }
       try {
-        const r = await detectLiked(unified.id, sources);
+        const r = await detectLiked(unified.id, sources, {
+          title: unified.title,
+          artist: unified.artist,
+          duration: unified.duration,
+        });
         // 只在还停留在这首歌时应用（防快速切歌竞态）。
         if (activeMergedIdRef.current !== unified.id) return;
         setFanOutCount(r.liked ? r.fannedOutTo.length : 0);
@@ -235,13 +555,50 @@ export function usePlayer(
     [],
   );
 
+  /**
+   * 重检当前这首歌的 liked/fanOut 状态。用于后台跨平台匹配（LikeSyncQueue
+   * discover）补齐后重新拿到更新后的 fannedOutTo，让 fanOutCount 角标准确。
+   */
+  const refreshLikedState = useCallback(() => {
+    void detectAndApplyLiked(currentUnifiedRef.current);
+  }, [detectAndApplyLiked]);
+
   const loadNextTrack = useCallback(async () => {
     if (!provider) return;
-    // Search mode: advance within the results queue (looping).
+    // Search / reco / liked-library mode: advance within the results queue.
     const q = queueRef.current;
     if (q && q.tracks.length) {
+      // Reco queue reached the end → pull the next AI batch and continue,
+      // rather than looping back to #1 (the classic search-queue behaviour).
+      const atEnd = q.idx >= q.tracks.length - 1;
+      if (atEnd && q.loadMore) {
+        setLoading(true);
+        try {
+          const more = await q.loadMore();
+          // Race guard: user may have skipped / switched source / started a new
+          // search during the await — only mutate if this is still the queue.
+          if (queueRef.current !== q) return;
+          const parsed = parsePlayableQueue(more);
+          if (parsed.tracks.length) {
+            q.tracks.push(...parsed.tracks);
+            (q.unifiedItems ??= []).push(...parsed.unifiedItems);
+            q.idx += 1;
+            presentTrack(q.tracks[q.idx], q.unifiedItems[q.idx]);
+            void detectAndApplyLiked(q.unifiedItems[q.idx]);
+            return;
+          }
+          // Next batch had nothing playable → fall through to loop so playback
+          // isn't a dead end.
+        } catch (e) {
+          setError(`获取下一批推荐失败：${(e as Error).message}`);
+          if (queueRef.current !== q) return;
+          // fall through to loop
+        } finally {
+          setLoading(false);
+        }
+      }
       q.idx = (q.idx + 1) % q.tracks.length;
-      presentTrack(q.tracks[q.idx]);
+      presentTrack(q.tracks[q.idx], q.unifiedItems?.[q.idx]);
       void detectAndApplyLiked(q.unifiedItems?.[q.idx]);
       return;
     }
@@ -269,33 +626,28 @@ export function usePlayer(
    *  dropping items with no playable source. Keeps unifiedItems aligned with
    *  tracks so handleLike / detect can map idx → the right unified item. */
   const playSearch = useCallback(
-    (unifiedItems: UnifiedSearchItem[], index: number) => {
+    (
+      unifiedItems: UnifiedSearchItem[],
+      index: number,
+      /** Reco only: loader for the next batch when this queue runs out. */
+      loadMore?: () => Promise<UnifiedSearchItem[]>,
+    ) => {
       // Keep track+unified ALIGNED: drop non-playable from both so idx maps
       // to the right unified item (for per-song ❤ detect / fan-out).
-      const playable: { track: Track; unified: UnifiedSearchItem }[] = [];
-      unifiedItems.forEach((it, i) => {
-        const t = pickPlayableTrack(it);
-        if (t) playable.push({ track: t, unified: unifiedItems[i] });
-      });
+      const { tracks, unifiedItems: aligned } = parsePlayableQueue(unifiedItems);
       const targetSrcIndex = unifiedItems[index] ? index : 0;
-      const startIdx = playable.findIndex(
-        (p) => p.unified === unifiedItems[targetSrcIndex],
-      );
-      if (startIdx < 0 || playable.length === 0) {
+      const startIdx = aligned.indexOf(unifiedItems[targetSrcIndex]);
+      if (startIdx < 0 || tracks.length === 0) {
         setError('没有可播放的音源');
         return;
       }
-      queueRef.current = {
-        tracks: playable.map((p) => p.track),
-        idx: startIdx,
-        unifiedItems: playable.map((p) => p.unified),
-      };
+      queueRef.current = { tracks, idx: startIdx, unifiedItems: aligned, loadMore };
       setSearchOpen(false);
       setError(null);
       // New search context → clear the old fan-out count.
       setFanOutCount(0);
-      presentTrack(playable[startIdx].track);
-      void detectAndApplyLiked(playable[startIdx].unified);
+      presentTrack(tracks[startIdx], aligned[startIdx]);
+      void detectAndApplyLiked(aligned[startIdx]);
     },
     [presentTrack, detectAndApplyLiked],
   );
@@ -321,6 +673,8 @@ export function usePlayer(
     const onLoadedMetadata = () => {
       setDuration(audio.duration || 0);
       // After a quality-switch reload, jump back to the original position.
+      // (Skip trial detection here — a quality reload of a trial is still a
+      // trial, and we don't want to yank the platform mid-listen.)
       if (pendingSeekRef.current != null) {
         try {
           audio.currentTime = pendingSeekRef.current;
@@ -328,6 +682,25 @@ export function usePlayer(
           // ignore occasional out-of-range seek
         }
         pendingSeekRef.current = null;
+        return;
+      }
+      // VIP 30s 试听检测（每个音源判一次）：只对完整曲流平台（qq/网易云），
+      // 且实际音频远短于元数据全长 → 判定为被 VIP 锁成的试听片段，去别的完整
+      // 平台搜全曲换过去。Deezer/Spotify 的 30s 是正常预览，provider 已排除。
+      if (!trialEvaluatedRef.current) {
+        trialEvaluatedRef.current = true;
+        const cur = trackRef.current;
+        const audioDur = audio.duration;
+        if (
+          cur &&
+          FULL_SONG_PROVIDERS.includes(cur.provider) &&
+          Number.isFinite(audioDur) &&
+          audioDur > 0 &&
+          audioDur <= TRIAL_MAX_SEC &&
+          cur.duration > audioDur + TRIAL_GAP_SEC
+        ) {
+          void handleTrialDetected();
+        }
       }
     };
     const onCanPlay = () => {
@@ -354,7 +727,12 @@ export function usePlayer(
       const err = audio.error;
       const code = err ? `code=${err.code}` : 'no-MediaError';
       console.error('[audio] error', code, audio.src);
-      setError(`音频加载失败（${code}），请尝试切歌`);
+      // 无版权 / 取流失败：先自动降级到同一首歌的其它平台源（含向服务端实时
+      // 匹配），全都失败才把报错弹给用户。tryFallbackSource 是异步的（可能要
+      // 问服务端），拿到 false 才报错。
+      void tryFallbackSource().then((ok) => {
+        if (!ok) setError(`音频加载失败（${code}），请尝试切歌`);
+      });
     };
     audio.addEventListener('timeupdate', onTimeUpdate);
     audio.addEventListener('durationchange', onDurationChange);
@@ -374,7 +752,14 @@ export function usePlayer(
       audio.removeEventListener('ended', onEnded);
       audio.removeEventListener('error', onError);
     };
-  }, [track, loadNextTrack, ensureAudioGraph, audioRef]);
+  }, [
+    track,
+    loadNextTrack,
+    ensureAudioGraph,
+    audioRef,
+    tryFallbackSource,
+    handleTrialDetected,
+  ]);
 
   // Sync play/pause — but only call play() once the audio is actually ready
   // (the src is set on mount but data hasn't streamed yet). onCanPlay retries.
@@ -551,7 +936,7 @@ export function usePlayer(
     const q = queueRef.current;
     if (q && q.tracks.length) {
       q.idx = (q.idx - 1 + q.tracks.length) % q.tracks.length;
-      presentTrack(q.tracks[q.idx]);
+      presentTrack(q.tracks[q.idx], q.unifiedItems?.[q.idx]);
       void detectAndApplyLiked(q.unifiedItems?.[q.idx]);
     }
   }, [presentTrack, detectAndApplyLiked]);
@@ -571,7 +956,13 @@ export function usePlayer(
         .map((s) => ({ platform: s.platform, trackId: s.trackId }));
       const next = !track.liked;
       try {
-        const result = await fanOutLike(current.id, sources, next);
+        // 带上歌曲元数据：收藏时后端会去其余已登录平台跨平台匹配同名同时长的
+        // 等价曲目，把红心真正同步过去（严格 ±3s，后台异步）。
+        const result = await fanOutLike(current.id, sources, next, {
+          title: current.title,
+          artist: current.artist,
+          duration: current.duration,
+        });
         setFanOutCount(next ? result.fannedOutTo.length : 0);
         setTrack((prev) => (prev ? { ...prev, liked: next } : prev));
       } catch (e) {
@@ -579,8 +970,13 @@ export function usePlayer(
       }
       return;
     }
-    // Single-platform path (radio): toggleLike 本身就是翻转语义。
-    const result = await toggleLike(provider, track.id);
+    // Single-platform path (radio): toggleLike 本身就是翻转语义。收藏方向同样
+    // 带元数据，让后端跨平台匹配把红心补到其余已登录平台。
+    const result = await toggleLike(provider, track.id, {
+      title: track.title,
+      artist: track.artist,
+      duration: track.duration,
+    });
     if (result.success) {
       setTrack((prev) => (prev ? { ...prev, liked: result.liked } : prev));
       setFanOutCount(0);
@@ -638,6 +1034,9 @@ export function usePlayer(
     setCurrentTime(0);
     setDuration(0);
     queueRef.current = null;
+    currentUnifiedRef.current = undefined;
+    triedPlatformsRef.current = new Set();
+    setError(null);
     setSearchOpen(false);
     setProvider(null);
     // Drop the analyser so it doesn't keep reading from a MediaStream whose
@@ -659,6 +1058,7 @@ export function usePlayer(
     searchOpen,
     setSearchOpen,
     fanOutCount,
+    trialFellBack,
     qqQuality,
     deezerPreset,
     // cover refs (for the JSX)
@@ -677,6 +1077,7 @@ export function usePlayer(
     handlePrev,
     handleLike,
     handleDislike,
+    refreshLikedState,
     seek,
     resetForSwitch,
   };

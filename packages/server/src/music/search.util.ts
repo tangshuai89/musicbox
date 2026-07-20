@@ -48,6 +48,33 @@ export const PLAY_PRIORITY: MusicProvider[] = [
   'spotify',
 ];
 
+/** 能出「全曲」的平台。Deezer 匿名 / Spotify 非 Premium 本身就是 30s 预览，
+ *  不算全曲源——所以"优先非 VIP 锁"这一档只在它们之间挑，别让一个 Deezer 预览
+ *  仅因为"没被标 VIP 锁"就顶掉一个 QQ 源。 */
+const FULL_SONG_PROVIDERS: ReadonlySet<MusicProvider> = new Set<MusicProvider>([
+  'qq',
+  'netease',
+]);
+
+/**
+ * 选 bestSource：两档优先。
+ *  1. **完整曲流平台里，有版权且非 VIP 锁**的（qq/网易云中能出全曲的）→ 按平台
+ *     优先级选。这样"网易云免费全曲、QQ 绿钻独占"会直接选网易云，不再选中 QQ
+ *     然后播成 30s 试听。
+ *  2. 都没有 → 退回「按平台优先级选第一个有版权的」（**与之前完全一致**的行为，
+ *     best-effort：QQ 试听仍优于 Deezer 预览，不会因 tier-1 漏选而把 Deezer 顶上来）。
+ */
+export function selectBestSource(sources: SourceInfo[]): MusicProvider | null {
+  const byPriority = (pred: (s: SourceInfo) => boolean): MusicProvider | null =>
+    PLAY_PRIORITY.find((p) => sources.some((s) => s.platform === p && pred(s))) ??
+    null;
+  return (
+    byPriority(
+      (s) => s.hasCopyright && !s.vipLocked && FULL_SONG_PROVIDERS.has(s.platform),
+    ) ?? byPriority((s) => s.hasCopyright)
+  );
+}
+
 /** 同 normalizeKey 的两首视为"同一版本"的最大 duration 差（秒）。与
  *  match.service 的 DURATION_TOLERANCE_SEC 保持一致。 */
 export const VERSION_DURATION_TOLERANCE_SEC = 3;
@@ -123,6 +150,8 @@ export function buildUnifiedItems(
         url: track.audioUrl,
         // 透传 QQ 的 media_mid，让统一搜索结果走「标准→320→无损」时仍可升级。
         mediaMid: track.mediaMid,
+        // 透传 VIP 锁标记，selectBestSource 据此避开只能出试听的源。
+        vipLocked: track.vipLocked,
       }));
       // main：取 cluster 内优先级最高平台的 track（决定 id / 展示信息），
       // 保证同一版本的 id 稳定、标题优先用 QQ/网易云的中文名。
@@ -130,10 +159,7 @@ export function buildUnifiedItems(
         PLAY_PRIORITY.map((p) =>
           cluster.find((e) => e.track.provider === p),
         ).find(Boolean)?.track ?? cluster[0].track;
-      const bestSource =
-        PLAY_PRIORITY.find((p) =>
-          sources.some((s) => s.platform === p && s.hasCopyright),
-        ) ?? null;
+      const bestSource = selectBestSource(sources);
       items.push({
         id: `merged-${main.provider}-${main.id}`,
         title: main.title,

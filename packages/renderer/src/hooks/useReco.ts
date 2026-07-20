@@ -20,7 +20,11 @@ interface RecoStatus {
  * queue as search via the `playSearch` callback.
  */
 export function useReco(
-  playSearch: (items: UnifiedSearchItem[], index: number) => void,
+  playSearch: (
+    items: UnifiedSearchItem[],
+    index: number,
+    loadMore?: () => Promise<UnifiedSearchItem[]>,
+  ) => void,
   setError: Dispatch<SetStateAction<string | null>>,
 ) {
   const [recoStatus, setRecoStatus] = useState<RecoStatus | null>(null);
@@ -77,8 +81,26 @@ export function useReco(
         setError('推荐没拿到结果，换个心情/语言试试？');
         return;
       }
-      // Reuse the same playback link as the search queue.
-      playSearch(result.items, 0);
+      // Track everything recommended this session so the auto-continue batches
+      // don't replay songs (the server dedups against the library but not
+      // across reco runs). Seeded with this first batch.
+      const recommended: Array<{ title: string; artist: string }> =
+        result.items.map((it) => ({ title: it.title, artist: it.artist }));
+      const loadMore = async (): Promise<UnifiedSearchItem[]> => {
+        const next = await runReco({
+          count: 10,
+          // Cap the exclude list so the prompt/request stays bounded on long
+          // listening sessions; the most recent picks matter most.
+          exclude: recommended.slice(-100),
+        });
+        for (const it of next.items) {
+          recommended.push({ title: it.title, artist: it.artist });
+        }
+        return next.items;
+      };
+      // Reuse the same playback link as the search queue, plus the next-batch
+      // loader so playback continues past the last recommendation.
+      playSearch(result.items, 0, loadMore);
     } catch (e) {
       setError(`推荐失败：${(e as Error).message}`);
     } finally {

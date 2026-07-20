@@ -64,6 +64,7 @@ const match = {
 };
 const likeSync = {
   registerProcessor: () => {},
+  registerDiscoverResolver: () => {},
   enqueue: () => {},
   pendingTargets: () => [],
 };

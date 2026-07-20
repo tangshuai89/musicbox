@@ -111,14 +111,28 @@ export async function fetchNextTrack(
   );
 }
 
+/** 跨平台匹配元数据：点 ❤ / 检测已红心时随请求带上，后端用它去其余已登录
+ *  平台搜同名同时长的等价曲目，把红心真正同步过去（严格 duration ±3s）。 */
+export interface LikeMeta {
+  title: string;
+  artist: string;
+  duration: number;
+}
+
 export async function toggleLike(
   provider: MusicProvider,
   trackId: string,
+  meta?: LikeMeta,
 ): Promise<{ success: boolean; liked: boolean }> {
   return json(
     await fetch(
       `${API_BASE}/music/like/${encodeURIComponent(trackId)}?provider=${provider}`,
-      { method: 'POST', credentials: 'include' },
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(meta ? { meta } : {}),
+      },
     ),
   );
 }
@@ -135,13 +149,14 @@ export async function fanOutLike(
   mergedId: string,
   sources: Array<{ platform: MusicProvider; trackId: string }>,
   liked: boolean,
+  meta?: LikeMeta,
 ): Promise<{ success: boolean; liked: boolean; fannedOutTo: MusicProvider[] }> {
   return json(
     await fetch(`${API_BASE}/music/like/merged`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mergedId, sources, liked }),
+      body: JSON.stringify({ mergedId, sources, liked, meta }),
     }),
   );
 }
@@ -154,13 +169,14 @@ export async function fanOutLike(
 export async function detectLiked(
   mergedId: string,
   sources: Array<{ platform: MusicProvider; trackId: string }>,
+  meta?: LikeMeta,
 ): Promise<{ liked: boolean; fannedOutTo: MusicProvider[] }> {
   return json(
     await fetch(`${API_BASE}/music/like/detect`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mergedId, sources }),
+      body: JSON.stringify({ mergedId, sources, meta }),
     }),
   );
 }
@@ -333,6 +349,9 @@ export interface UnifiedSourceInfo {
   hasCopyright: boolean;
   url: string;
   mediaMid?: string;
+  /** 当前会话大概率放不了全曲（VIP 独占 / 付费 / 只给试听）。服务端已据此选
+   *  bestSource；客户端跨平台降级/升级时也可用它避开锁源。 */
+  vipLocked?: boolean;
 }
 
 /** 统一搜索结果（去重合并后）单条。 */
@@ -380,6 +399,29 @@ export async function searchUnified(
       signal,
     }),
   );
+}
+
+/**
+ * 实时跨平台匹配：当前 track（provider + 元数据）播放失败（code=4）时，请求
+ * 服务端去其余已登录平台搜同名同时长的等价曲目，拿一个可直接播放的 source
+ * 回来。找不到返回 null。严格匹配（歌名+歌手+时长 ±3s）在服务端做。
+ */
+export async function findEquivalentSource(
+  provider: MusicProvider,
+  meta: LikeMeta,
+): Promise<UnifiedSourceInfo | null> {
+  const params = new URLSearchParams({
+    provider,
+    title: meta.title,
+    artist: meta.artist,
+    duration: String(meta.duration),
+  });
+  const res = await json<{ source: UnifiedSourceInfo | null }>(
+    await fetch(`${API_BASE}/music/equivalents?${params.toString()}`, {
+      credentials: 'include',
+    }),
+  );
+  return res.source;
 }
 
 /**
@@ -438,6 +480,12 @@ export interface RecoRequest {
   count?: number;
   language?: 'zh' | 'en' | 'ja' | 'auto' | string;
   mood?: string;
+  /**
+   * Songs to keep OUT of this batch (on top of the always-excluded library).
+   * Used by the auto-continue path so the next batch doesn't replay tracks
+   * already in the reco queue. Server merges these into its dedup set.
+   */
+  exclude?: Array<{ title: string; artist: string }>;
 }
 
 export interface RecoRunResult {

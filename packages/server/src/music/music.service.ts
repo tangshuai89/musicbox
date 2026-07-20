@@ -16,15 +16,17 @@ import type {
   UnifiedSearchResult,
   UnifiedSearchItem,
   ProviderSearchRaw,
+  SourceInfo,
 } from './types';
 import {
   buildUnifiedItems,
   dedupTracks,
   normalizeKey,
+  VERSION_DURATION_TOLERANCE_SEC,
 } from './search.util';
 import { MatchService } from '../match/match.service';
 import { withTimeout } from '../common/timeout';
-import { LikeSyncQueue } from './like-sync.queue';
+import { LikeSyncQueue, type LikeSyncTask } from './like-sync.queue';
 
 /** unified search 单平台硬超时——5s。超过这个时间视为该平台缺席，
  *  不阻塞其他平台。Spotify 偶发 504 较常见，所以这个时间不能太松。 */
@@ -46,6 +48,16 @@ export interface Track {
   liked: boolean;
   /** QQ 取流用的 media_mid（可能 ≠ songmid），高音质 filename 需要它。 */
   mediaMid?: string;
+  /** 当前会话大概率放不了全曲（VIP 独占 / 付费 / 只给试听）。见 SourceInfo.vipLocked。 */
+  vipLocked?: boolean;
+}
+
+/** 跨平台匹配用的曲目元数据。点 ❤ / 检测已红心时随请求带上，用来去其余已登录
+ *  平台搜同名同时长的等价曲目（严格 duration gate），把红心真正同步过去。 */
+export interface LikeMeta {
+  title: string;
+  artist: string;
+  duration: number;
 }
 
 interface ProviderState {
@@ -98,6 +110,11 @@ export class MusicService {
     // 队列负责合并去重 / 串行 / 退避重试；这里只提供「怎么写一次」的逻辑。
     this.likeSync.registerProcessor((session, platform, trackId, liked) =>
       this.syncLikeRemoteOnce(session, platform, trackId, liked),
+    );
+    // 跨平台匹配回调：队列消费 like 任务时，先去其余已登录平台搜等价曲目
+    // 并落地本地 liked/fanOut，返回新目标供队列同步远端（严格 duration gate）。
+    this.likeSync.registerDiscoverResolver((task) =>
+      this.resolveEquivalents(task),
     );
   }
 
@@ -352,6 +369,54 @@ export class MusicService {
       return this.spotify.getStreamPath(ps!, trackId);
     }
     return this.deezer.getStreamPath(ps!, trackId);
+  }
+
+  /**
+   * 实时跨平台匹配：给定当前 track 的元数据（title/artist/duration），去
+   * 「当前 session 已登录且能写红心」的其余平台搜同名同时长的等价曲目，返回
+   * 首个命中的源（含可播放的后端代理 audioUrl），让前端在 code=4 失败时直接切
+   * 过去播放。按 PLAY_PRIORITY 取首个命中（qq > netease > spotify）。
+   *
+   * 与 `resolveEquivalents`（同步队列 discover 步）互补：那个只写 liked 状态、
+   * 不返回可播放 URL；这里只查 + 返回、**不写状态**。修的是「当前在播的
+   * unified item 只有 netease 一个 source，netease 挂了就无源可退」的播放盲点。
+   *
+   * 严格匹配：normalizeKey(歌名+歌手) 一致 + duration ±VERSION_DURATION_TOLERANCE_SEC。
+   * 未登录 / 搜不到 / 异常 → null（best-effort）。
+   */
+  async findPlayableEquivalent(
+    session: Session,
+    seedProvider: MusicProvider,
+    seed: LikeMeta,
+  ): Promise<SourceInfo | null> {
+    const priority: MusicProvider[] = ['qq', 'netease', 'spotify'];
+    const candidates = priority.filter(
+      (p) => p !== seedProvider && this.canSyncLike(session, p),
+    );
+    if (!candidates.length) return null;
+
+    const found = await Promise.all(
+      candidates.map(async (p) => {
+        const t = await this.searchEquivalent(session, p, seed);
+        return [p, t] as const;
+      }),
+    );
+
+    // 按优先级取首个命中，转成带可播放代理 URL 的 SourceInfo。
+    for (const p of priority) {
+      const hit = found.find(([pp]) => pp === p);
+      const t = hit?.[1];
+      if (!t) continue;
+      const playable = this.toPlayableTrack(t);
+      return {
+        platform: p,
+        trackId: t.id,
+        hasCopyright: true,
+        url: playable.audioUrl,
+        mediaMid: t.mediaMid,
+      };
+    }
+    return null;
   }
 
   /**
@@ -791,15 +856,308 @@ export class MusicService {
   }
 
   /** 把「每平台一首」的红心同步目标推入队列（MQ 思路：合并去重 + 异步重试）。
-   *  空目标直接忽略；不能写红心的平台（deezer/未登录）由入队方提前过滤。 */
+   *  discover（仅 liked=true）带上后，队列会先去其余已登录平台跨平台匹配补齐。
+   *  targets 与 discover 都空才忽略；不能写红心的平台（deezer/未登录）由入队方
+   *  提前过滤。 */
   private enqueueLikeSync(
     session: Session,
     mergedId: string,
     liked: boolean,
     targets: Array<{ platform: MusicProvider; trackId: string }>,
+    discover?: LikeSyncTask['discover'],
   ): void {
-    if (!targets.length) return;
-    this.likeSync.enqueue({ session, mergedId, liked, targets });
+    if (!targets.length && !discover) return;
+    this.likeSync.enqueue({ session, mergedId, liked, targets, discover });
+  }
+
+  /** 组装跨平台匹配元数据：have = 已有 source 的平台（匹配时跳过，不重复搜索）。
+   *  meta 缺省（老客户端不带）→ 返回 undefined，退化成「只写已有 source」的老行为。 */
+  private buildDiscover(
+    meta: LikeMeta | undefined,
+    have: MusicProvider[],
+  ): LikeSyncTask['discover'] {
+    if (!meta || (!meta.title && !meta.artist)) return undefined;
+    return {
+      title: meta.title,
+      artist: meta.artist,
+      duration: meta.duration,
+      have: [...new Set(have)],
+    };
+  }
+
+  /**
+   * 跨平台匹配 resolver（LikeSyncQueue 后台调）：给定一个带 discover 元数据的
+   * like 任务，去「已登录、likeable、且还没有这首歌 source」的平台搜同名同时长
+   * 的等价曲目，找到就本地乐观点亮 + 合并进 fanOut，并返回新目标供队列同步远端。
+   * 严格：normalizeKey（歌名+歌手）一致 + duration ±3s。找不到返回空数组。
+   */
+  private async resolveEquivalents(
+    task: LikeSyncTask,
+  ): Promise<Array<{ platform: MusicProvider; trackId: string }>> {
+    const meta = task.discover;
+    if (!meta) return [];
+    // 已覆盖 = 已有 source 的平台 ∪ 本任务已排定的 target 平台
+    // ∪ **fanOut 里已经记过的平台**（上次 discover 已经匹配过了，别再重复搜）。
+    // 这份 state 只用来算 dedup（读旧的可接受）；真正写入前会在 await 之后
+    // **重新 loadState**，避免搜索那几秒内别处的写被这份旧 state 覆盖（lost update）。
+    const preState = this.loadState(task.session);
+    const alreadyFanned = new Set(
+      (
+        preState.fanOut[
+          this.canonicalMergedId(preState, task.mergedId, task.targets)
+        ] ?? []
+      ).map((e) => e.platform),
+    );
+    const covered = new Set<MusicProvider>([
+      ...meta.have,
+      ...task.targets.map((t) => t.platform),
+      ...alreadyFanned,
+    ]);
+    const candidates = (['qq', 'netease', 'spotify'] as MusicProvider[]).filter(
+      (p) => !covered.has(p) && this.canSyncLike(task.session, p),
+    );
+    if (!candidates.length) {
+      const skipped = [...covered].filter((p) => alreadyFanned.has(p));
+      this.logger.debug?.(
+        `resolveEquivalents "${meta.title}": no candidates` +
+          (skipped.length ? ` (${skipped.join(', ')} already in fanOut)` : ''),
+      );
+      return [];
+    }
+
+    this.logger.debug?.(
+      `resolveEquivalents "${meta.title} - ${meta.artist}"` +
+        ` dur=${meta.duration} → trying [${candidates.join(', ')}]`,
+    );
+
+    // 保留完整 Track（不只是 id）——补库快照时要用它拼可播放的 source url。
+    const found = await Promise.all(
+      candidates.map(async (p) => {
+        const t = await this.searchEquivalent(task.session, p, meta);
+        return t ? { platform: p, track: t } : null;
+      }),
+    );
+    const matches = found.filter(
+      (m): m is { platform: MusicProvider; track: Track } => Boolean(m),
+    );
+    if (!matches.length) {
+      this.logger.log(
+        `resolveEquivalents "${meta.title}": no match on any of [${candidates.join(', ')}]`,
+      );
+      return [];
+    }
+
+    const targets = matches.map((m) => ({
+      platform: m.platform,
+      trackId: m.track.id,
+    }));
+
+    // 落地：**重新** loadState（await 期间别处可能已写入，用旧 preState 保存会
+    // 丢它们的更新）。本地 liked 乐观点亮 + 合并进 fanOut（漂移归一 + 每平台去重）。
+    const state = this.loadState(task.session);
+    const fullCanonicalId = this.canonicalMergedId(state, task.mergedId, [
+      ...task.targets,
+      ...targets,
+    ]);
+    for (const m of targets) this.setLike(state, m.platform, m.trackId, true);
+    state.fanOut[fullCanonicalId] = this.mergeFanOutEntries(
+      state.fanOut[fullCanonicalId] ?? [],
+      targets,
+    );
+    this.saveState(task.session, state);
+
+    // bug3：把新匹配到的平台源增量补进「我的喜欢」库快照，让弹窗刷新/重开即可
+    // 看到新平台徽章（fan-out 只改 live liked 状态，不会动这个快照）。
+    this.patchLibraryWithSources(
+      task.session,
+      meta,
+      matches.map((m) => this.toSourceInfo(m.track)),
+    );
+
+    this.logger.log(
+      `cross-platform match "${meta.title} - ${meta.artist}" → ` +
+        targets.map((m) => `${m.platform}/${m.trackId}`).join(', '),
+    );
+    return targets;
+  }
+
+  /** 把一个平台的 Track 转成库/搜索用的 SourceInfo（带可播放的后端代理 url）。 */
+  private toSourceInfo(track: Track): SourceInfo {
+    return {
+      platform: track.provider,
+      trackId: track.id,
+      hasCopyright: true,
+      url: this.toPlayableTrack(track).audioUrl,
+      mediaMid: track.mediaMid,
+    };
+  }
+
+  /**
+   * bug3：跨平台匹配补齐红心后，把新平台的 source 增量写进「我的喜欢」库快照
+   * （library.json）。fan-out 本身只改 live 的 `providers[p].liked`，不动这个
+   * 快照，所以要显式补，否则弹窗重开也看不到新平台徽章。
+   *
+   * 定位库条目：normalizeKey(歌名+歌手) 一致 + duration ±容差（复用等价匹配的
+   * 严格口径，不依赖 mergedId——mergedId 会漂移）。每平台最多一个 source、不
+   * 覆盖已有。这首歌不在库里（例如从搜索直接点❤的新歌）→ no-op。
+   */
+  private patchLibraryWithSources(
+    session: Session,
+    meta: LikeMeta,
+    newSources: SourceInfo[],
+  ): void {
+    if (!newSources.length) return;
+    const stored = this.storage.get<{
+      importedAt: number;
+      items: UnifiedSearchItem[];
+      sources: Array<{ provider: MusicProvider; count: number; error?: string }>;
+    }>(this.libraryKey(session.id));
+    if (!stored) return;
+    const wantKey = this.normalizeKey(meta.title, meta.artist);
+    const wantTitleKey = this.normalizeKey(meta.title, '');
+    const wantArtistKey = this.normalizeKey(meta.artist, '');
+
+    // 先精确 normalizeKey，再宽松（歌名+歌手双向包含——兼容"手嶌葵" vs "手嶌葵(てしまあおい)"）。
+    const item =
+      stored.items.find((it) => {
+        if (this.normalizeKey(it.title, it.artist) !== wantKey) return false;
+        return !this.durationMismatch(meta.duration, it.duration);
+      }) ??
+      stored.items.find((it) => {
+        const tt = this.normalizeKey(it.title, '');
+        const ta = this.normalizeKey(it.artist, '');
+        if (
+          !tt ||
+          !wantTitleKey ||
+          (!tt.includes(wantTitleKey) && !wantTitleKey.includes(tt))
+        )
+          return false;
+        if (
+          ta &&
+          wantArtistKey &&
+          !ta.includes(wantArtistKey) &&
+          !wantArtistKey.includes(ta)
+        )
+          return false;
+        return !this.durationMismatch(meta.duration, it.duration);
+      });
+    if (!item) {
+      this.logger.debug?.(
+        `patchLibrary: no item for "${meta.title} - ${meta.artist}"` +
+          ` (wantKey="${wantKey}" dur=${meta.duration})`,
+      );
+      return;
+    }
+    const have = new Set(item.sources.map((s) => s.platform));
+    let changed = false;
+    for (const src of newSources) {
+      if (have.has(src.platform)) continue; // 每平台一个，不覆盖已有
+      item.sources.push(src);
+      have.add(src.platform);
+      changed = true;
+    }
+    if (!changed) return;
+    // 原本没有可播放 bestSource（罕见）→ 用新补的有版权源兜底。
+    if (!item.bestSource) {
+      const copyrighted = newSources.find((s) => s.hasCopyright);
+      if (copyrighted) item.bestSource = copyrighted.platform;
+    }
+    this.storage.set(this.libraryKey(session.id), stored);
+    this.logger.log(
+      `library patched: "${item.title} - ${item.artist}" += ` +
+        newSources.map((s) => s.platform).join(', '),
+    );
+  }
+
+  /**
+   * 去单个平台搜「同一首歌」的等价曲目（严格匹配）。normalizeKey 一致 +
+   * （两边时长都已知时）duration ±VERSION_DURATION_TOLERANCE_SEC。未登录 /
+   * 搜不到 / 异常 → null（best-effort，绝不 throw 打断队列）。
+   */
+  private async searchEquivalent(
+    session: Session,
+    platform: MusicProvider,
+    meta: LikeMeta,
+  ): Promise<Track | null> {
+    const kw = `${meta.title} ${meta.artist}`.trim();
+    if (!kw) return null;
+    try {
+      let tracks: Track[] = [];
+      if (platform === 'qq') {
+        tracks = await this.qq.search(session.providers.qq ?? {}, kw, 5);
+      } else if (platform === 'netease') {
+        const ps = session.providers.netease;
+        if (!ps?.musicU) return null;
+        tracks = await this.netease.search(ps, kw, 5);
+      } else if (platform === 'spotify') {
+        const ps = session.providers.spotify;
+        if (!ps?.spotify) return null;
+        tracks = await this.spotify.search(ps, kw, 5);
+      } else {
+        return null; // deezer 匿名无收藏，不参与
+      }
+      const wantKey = this.normalizeKey(meta.title, meta.artist);
+      const wantTitleKey = this.normalizeKey(meta.title, '');
+      const wantArtistKey = this.normalizeKey(meta.artist, '');
+
+      // 第一遍：精确 normalizeKey 匹配。
+      for (const t of tracks) {
+        const tk = this.normalizeKey(t.title, t.artist);
+        if (tk !== wantKey) continue;
+        if (this.durationMismatch(meta.duration, t.duration)) continue;
+        this.logger.debug?.(
+          `searchEquivalent ${platform} exact match: "${t.title} - ${t.artist}"`,
+        );
+        return t;
+      }
+
+      // 第二遍：宽松匹配（歌名+歌手双向包含）。修复"QQ 歌手名带日文读法括号
+      // → normalizeKey('手嶌葵(てしまあおい)') ≠ 网易云 normalizeKey('手嶌葵')"。
+      for (const t of tracks) {
+        const tt = this.normalizeKey(t.title, '');
+        const ta = this.normalizeKey(t.artist, '');
+        const titleOk =
+          tt && wantTitleKey && (tt.includes(wantTitleKey) || wantTitleKey.includes(tt));
+        if (!titleOk) continue;
+        const artistOk =
+          !ta || !wantArtistKey || ta.includes(wantArtistKey) || wantArtistKey.includes(ta);
+        if (!artistOk) continue;
+        if (this.durationMismatch(meta.duration, t.duration)) continue;
+        this.logger.log(
+          `searchEquivalent ${platform} loose match: ` +
+            `"${t.title} - ${t.artist}" ← "${meta.title} - ${meta.artist}"` +
+            ` (exact key mismatch: want="${wantKey}" got="${this.normalizeKey(t.title, t.artist)}")`,
+        );
+        return t;
+      }
+
+      // 匹配失败 → 记日志方便排查。
+      const samples = tracks.slice(0, 3).map(
+        (t) =>
+          `"${t.title} - ${t.artist}"` +
+          ` key="${this.normalizeKey(t.title, t.artist)}"` +
+          ` dur=${t.duration}`,
+      );
+      this.logger.log(
+        `searchEquivalent ${platform} no match for "${meta.title} - ${meta.artist}"` +
+          ` (wantKey="${wantKey}" dur=${meta.duration}, ` +
+          `candidates: [${samples.join(', ')}])`,
+      );
+      return null;
+    } catch (err) {
+      this.logger.warn(
+        `searchEquivalent ${platform} "${kw}" failed: ${(err as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  private durationMismatch(seedDuration: number, candDuration: number): boolean {
+    return (
+      seedDuration > 0 &&
+      candDuration > 0 &&
+      Math.abs(candDuration - seedDuration) > VERSION_DURATION_TOLERANCE_SEC
+    );
   }
 
   // ── 跨平台红心检测 + 自动同步（切歌时用） ──────────────────
@@ -1013,6 +1371,7 @@ export class MusicService {
     session: Session,
     mergedId: string,
     sources: Array<{ platform: MusicProvider; trackId: string }>,
+    meta?: LikeMeta,
   ): Promise<{ liked: boolean; fannedOutTo: MusicProvider[] }> {
     const byPlatform = this.groupByPlatform(sources);
 
@@ -1072,7 +1431,16 @@ export class MusicService {
 
     // 关键改动：远端写不再在切歌时内联执行，而是推入同步队列（MQ 思路）——
     // 每平台一首、失败自动重试、不阻塞播放。检测→入队→后台同步解耦。
-    this.enqueueLikeSync(session, canonicalId, true, targets);
+    // discover：这首歌已有红心 → 顺带去「其余已登录但还没这首 source」的平台
+    // 跨平台匹配补齐（后台，严格 ±3s）。targets 可能为空（已红心平台不需要
+    // 重写远端）但 discover 仍要跑，所以 enqueue 允许 discover-only。
+    this.enqueueLikeSync(
+      session,
+      canonicalId,
+      true,
+      targets,
+      this.buildDiscover(meta, [...byPlatform.keys()]),
+    );
 
     return { liked: true, fannedOutTo: merged.map((e) => e.platform) };
   }
@@ -1081,6 +1449,7 @@ export class MusicService {
     session: Session,
     provider: MusicProvider,
     trackId: string,
+    meta?: LikeMeta,
   ): Promise<{ success: boolean; liked: boolean }> {
     // Deezer 等匿名源没有收藏概念：点 ❤ 静默 no-op，不写本地、不入队、不点亮。
     if (!this.isLikeable(provider)) {
@@ -1089,12 +1458,19 @@ export class MusicService {
     const state = this.loadState(session);
     const wasLiked = this.applyLikeToggle(state, provider, trackId);
     this.saveState(session, state);
+    const nowLiked = !wasLiked;
     // 远端同步走队列（best-effort + 重试，不阻塞本地）。单平台用一个稳定
     // 的合成 key，避免和统一搜索的 mergedId 撞车。
-    this.enqueueLikeSync(session, `single:${provider}:${trackId}`, !wasLiked, [
-      { platform: provider, trackId },
-    ]);
-    return { success: true, liked: !wasLiked };
+    // discover：这是电台单平台 track（如 QQ 私人 FM），点 ❤ 时顺带去其余
+    // 已登录平台跨平台匹配，把红心同步过去（仅收藏方向，取消不匹配）。
+    this.enqueueLikeSync(
+      session,
+      `single:${provider}:${trackId}`,
+      nowLiked,
+      [{ platform: provider, trackId }],
+      nowLiked ? this.buildDiscover(meta, [provider]) : undefined,
+    );
+    return { success: true, liked: nowLiked };
   }
 
   /**
@@ -1119,6 +1495,7 @@ export class MusicService {
     mergedId: string,
     sources: Array<{ platform: MusicProvider; trackId: string }>,
     liked: boolean,
+    meta?: LikeMeta,
   ): Promise<{
     success: boolean;
     liked: boolean;
@@ -1178,7 +1555,15 @@ export class MusicService {
 
     this.saveState(session, state);
     // 远端写走同步队列：合并去重、每平台一首、失败重试，不阻塞本次响应。
-    this.enqueueLikeSync(session, canonicalId, liked, targets);
+    // discover：收藏方向时，顺带去「搜索结果里没有、但用户已登录」的平台
+    // 跨平台匹配补齐（后台，严格 ±3s）。取消方向不匹配（只按 fanOut 记录 unlike）。
+    this.enqueueLikeSync(
+      session,
+      canonicalId,
+      liked,
+      targets,
+      liked ? this.buildDiscover(meta, [...this.groupByPlatform(sources).keys()]) : undefined,
+    );
     // 返回"全集"——liked=true 时就是当前 fan-out 列表；liked=false 时空数组
     const fannedOutTo = liked
       ? (state.fanOut[canonicalId] ?? []).map((e) => e.platform)
