@@ -8,10 +8,17 @@
 // ─────────────────────────────────────────────────────────────────
 
 .cover-card {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  // This element carries the frosted backdrop-filter. Transforming a
+  // backdrop-filter element (e.g. on :hover) makes Chromium re-rasterise the
+  // blurred backdrop on every frame; combined with the per-frame bass
+  // "breathing" transform on the child .cover-art, the cover flickers
+  // continuously while the pointer is over the card. The hover LIFT is
+  // therefore applied to .cover-card-inner (which has no backdrop-filter) —
+  // the frosted frame stays put and only its contents rise. The side cards
+  // tolerate the lift because none of them has a continuously-animating
+  // descendant.
+  display: block;
   padding: 16px;
-  gap: 14px;
   background: color-mix(
     in oklab,
     var(--cover-accent) 12%,
@@ -26,14 +33,33 @@
     inset 0 -1px 0 rgba(0, 0, 0, 0.16);
 }
 
-.cover-card:hover {
-  transform: translateY(-3px);
+// Neutralise the base .glass-card:hover lift for the hero card. The
+// .glass-card.cover-card selector wins on specificity, so the frosted frame
+// itself NEVER transforms and its backdrop-filter stays static. The raised
+// shadow below still sells the "lift" affordance.
+.glass-card.cover-card:hover {
+  transform: none;
   box-shadow:
     var(--shadow-lg),
     0 24px 60px color-mix(in oklab, #000 45%, transparent),
     0 0 0 1px color-mix(in oklab, var(--cover-accent) 18%, transparent),
     inset 0 1px 0 rgba(255, 255, 255, 0.22),
     inset 0 -1px 0 rgba(0, 0, 0, 0.18);
+}
+
+// Inner content wrapper — owns the grid rows + the hover lift. No
+// backdrop-filter here, so transforming it is cheap and never flickers.
+.cover-card-inner {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 14px;
+  height: 100%;
+  transition: transform 0.4s var(--ease-out);
+  will-change: transform;
+}
+
+.glass-card.cover-card:hover .cover-card-inner {
+  transform: translateY(-3px);
 }
 
 // Cover stack: original cover-art on top + a blurred mirror reflection

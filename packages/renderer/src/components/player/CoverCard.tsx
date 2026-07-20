@@ -27,19 +27,26 @@ export default function CoverCard({
 }: Props) {
   return (
     <div className={`glass-card cover-card${playing ? ' is-playing' : ''}`}>
-      <div className="cover-stack" key={`stack-${track?.id ?? 'empty'}`}>
-        <div className="cover-art" ref={coverBackdropRef} onError={resetCoverColor}>
-          {!track?.coverUrl && <div className="cover-art-placeholder">♪</div>}
+      {/* .cover-card-inner owns the grid rows + the hover lift. The lift is
+          applied here (not on .cover-card) so the frosted, backdrop-filtered
+          frame never transforms — transforming it while .cover-art breathes
+          every frame makes Chromium re-rasterise the blur and the cover
+          flickers. See _cover-card.scss. */}
+      <div className="cover-card-inner">
+        <div className="cover-stack" key={`stack-${track?.id ?? 'empty'}`}>
+          <div className="cover-art" ref={coverBackdropRef} onError={resetCoverColor}>
+            {!track?.coverUrl && <div className="cover-art-placeholder">♪</div>}
+          </div>
+          {/* Mirror reflection — picks up the same background-image via
+              `background-image: inherit`, flipped + blurred + masked. */}
+          <div className="cover-art-reflection" aria-hidden="true" />
         </div>
-        {/* Mirror reflection — picks up the same background-image via
-            `background-image: inherit`, flipped + blurred + masked. */}
-        <div className="cover-art-reflection" aria-hidden="true" />
-      </div>
-      <div className="cover-meta" key={`meta-${track?.id ?? 'empty'}`}>
-        <div className="track-title">{track?.title || '...'}</div>
-        <div className="track-artist">{track?.artist || '正在加载'}</div>
-        {track?.album && <div className="track-album">{track.album}</div>}
-        {error && <ErrorPanel message={error} onClose={onCloseError} />}
+        <div className="cover-meta" key={`meta-${track?.id ?? 'empty'}`}>
+          <div className="track-title">{track?.title || '...'}</div>
+          <div className="track-artist">{track?.artist || '正在加载'}</div>
+          {track?.album && <div className="track-album">{track.album}</div>}
+          {error && <ErrorPanel message={error} onClose={onCloseError} />}
+        </div>
       </div>
     </div>
   );
