@@ -8,58 +8,78 @@
 // ─────────────────────────────────────────────────────────────────
 
 .cover-card {
-  // This element carries the frosted backdrop-filter. Transforming a
-  // backdrop-filter element (e.g. on :hover) makes Chromium re-rasterise the
-  // blurred backdrop on every frame; combined with the per-frame bass
-  // "breathing" transform on the child .cover-art, the cover flickers
-  // continuously while the pointer is over the card. The hover LIFT is
-  // therefore applied to .cover-card-inner (which has no backdrop-filter) —
-  // the frosted frame stays put and only its contents rise. The side cards
-  // tolerate the lift because none of them has a continuously-animating
-  // descendant.
+  // The frosted blur lives on the SIBLING .cover-card-frost, not here. Putting
+  // backdrop-filter on this element was the original flicker cause: the bass
+  // "breathing" transform on .cover-art (a descendant) runs every RAF tick,
+  // and the moment .cover-card repaints for any reason — most notably the
+  // hover box-shadow change — Chromium re-rasterises the cached blur each
+  // frame, flashing the card continuously while the pointer is over it. The
+  // fix is structural: keep the blur on a zero-descendant static layer so the
+  // per-frame animation can never invalidate its cache.
   display: block;
   padding: 16px;
+  // Solid fallback background — sits UNDER .cover-card-frost and shows through
+  // any sub-pixel gaps between the frost layer and the card edge, plus serves
+  // as the visible surface on browsers that don't honour backdrop-filter.
   background: color-mix(
     in oklab,
     var(--cover-accent) 12%,
     rgba(255, 255, 255, 0.1)
   );
   border-color: color-mix(in oklab, var(--cover-accent) 30%, var(--border-strong));
-  @include backdrop-blur(44px, 190%);
   box-shadow:
     var(--shadow-lg),
     0 0 0 1px color-mix(in oklab, var(--cover-accent) 12%, transparent),
     inset 0 1px 0 rgba(255, 255, 255, 0.18),
     inset 0 -1px 0 rgba(0, 0, 0, 0.16);
+  // `.glass-card` already declares transform/box-shadow transitions; this just
+  // keeps them in case the partial ever ships without the base class.
+  transition:
+    transform 0.4s var(--ease-out),
+    box-shadow 0.4s var(--ease-out);
 }
 
-// Neutralise the base .glass-card:hover lift for the hero card. The
-// .glass-card.cover-card selector wins on specificity, so the frosted frame
-// itself NEVER transforms and its backdrop-filter stays static. The raised
-// shadow below still sells the "lift" affordance.
-.glass-card.cover-card:hover {
-  transform: none;
+// Static frosted layer. Sibling of (not ancestor of) the animated cover art,
+// so nothing inside it animates and nothing inside .cover-card-inner can
+// trigger re-rasterisation of its cached backdrop. .cover-card's overflow +
+// border-radius (from .glass-card) clip it to the rounded card shape.
+.cover-card-frost {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: color-mix(
+    in oklab,
+    var(--cover-accent) 6%,
+    rgba(255, 255, 255, 0.04)
+  );
+  @include backdrop-blur(44px, 190%);
+}
+
+// Inner content wrapper — sits ABOVE the frost layer (z-index 1) and owns the
+// grid rows. The per-frame .cover-art transform happens here, on a sibling of
+// the frost layer, so it never invalidates the backdrop-filter cache.
+.cover-card-inner {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 14px;
+  height: 100%;
+}
+
+// Hover affordance lives on .cover-card directly — it no longer carries
+// backdrop-filter, so lifting the card can no longer thrash the blur cache.
+// The frosted layer translates with its parent during the 0.4s transition,
+// which is a one-shot re-sample, not the per-frame thrash the old layout had.
+.cover-card:hover {
+  transform: translateY(-3px);
   box-shadow:
     var(--shadow-lg),
     0 24px 60px color-mix(in oklab, #000 45%, transparent),
     0 0 0 1px color-mix(in oklab, var(--cover-accent) 18%, transparent),
     inset 0 1px 0 rgba(255, 255, 255, 0.22),
     inset 0 -1px 0 rgba(0, 0, 0, 0.18);
-}
-
-// Inner content wrapper — owns the grid rows + the hover lift. No
-// backdrop-filter here, so transforming it is cheap and never flickers.
-.cover-card-inner {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
-  gap: 14px;
-  height: 100%;
-  transition: transform 0.4s var(--ease-out);
-  will-change: transform;
-}
-
-.glass-card.cover-card:hover .cover-card-inner {
-  transform: translateY(-3px);
 }
 
 // Cover stack: original cover-art on top + a blurred mirror reflection
