@@ -604,17 +604,71 @@ export interface LyricLine {
   text: string;
 }
 
+/** 歌词来源——平台源或 lyrics.ovh 第三方兜底。 */
+export type LyricsSource = MusicProvider | 'lyricsovh';
+
+export interface LyricsResult {
+  lines: LyricLine[];
+  /** false = 纯文本歌词（无时间戳），面板不做滚动高亮/点击跳转 */
+  synced: boolean;
+  source: LyricsSource;
+}
+
+function sourcesParam(
+  sources: Array<{ platform: MusicProvider; trackId: string }>,
+): string {
+  return sources.map((s) => `${s.platform}:${s.trackId}`).join(',');
+}
+
+/**
+ * 多源聚合歌词：主 provider → 其余平台 source → lyrics.ovh 兜底。
+ * title/artist 供第三方兜底检索；sources 是这首歌在其他平台的等价曲目。
+ */
 export async function fetchLyrics(
   provider: MusicProvider,
   trackId: string,
-): Promise<LyricLine[] | null> {
-  const res = await fetch(
-    `${API_BASE}/music/lyrics?provider=${provider}&trackId=${encodeURIComponent(trackId)}`,
-    { credentials: 'include' },
-  );
+  opts?: {
+    title?: string;
+    artist?: string;
+    sources?: Array<{ platform: MusicProvider; trackId: string }>;
+  },
+): Promise<LyricsResult | null> {
+  const params = new URLSearchParams({ provider, trackId });
+  if (opts?.title) params.set('title', opts.title);
+  if (opts?.artist) params.set('artist', opts.artist);
+  if (opts?.sources && opts.sources.length > 0) {
+    params.set('sources', sourcesParam(opts.sources));
+  }
+  const res = await fetch(`${API_BASE}/music/lyrics?${params.toString()}`, {
+    credentials: 'include',
+  });
   if (!res.ok) return null;
-  const data = (await res.json()) as { lyrics: LyricLine[] | null };
-  return data.lyrics ?? null;
+  const data = (await res.json()) as {
+    lyrics: LyricLine[] | null;
+    synced?: boolean;
+    source?: LyricsSource | null;
+  };
+  if (!data.lyrics || data.lyrics.length === 0) return null;
+  return {
+    lines: data.lyrics,
+    synced: data.synced ?? true,
+    source: data.source ?? provider,
+  };
+}
+
+/** 搜索结果行的歌词可用性探测（只查平台源，命中即停，服务端有缓存）。 */
+export async function fetchLyricsAvailability(
+  sources: Array<{ platform: MusicProvider; trackId: string }>,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (sources.length === 0) return false;
+  const res = await fetch(
+    `${API_BASE}/music/lyrics/availability?sources=${encodeURIComponent(sourcesParam(sources))}`,
+    { credentials: 'include', signal },
+  );
+  if (!res.ok) return false;
+  const data = (await res.json()) as { available: boolean };
+  return data.available;
 }
 
 // ── 会话快照 备份/导出/导入 ──────────────────────────────────────────────

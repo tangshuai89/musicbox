@@ -1050,6 +1050,13 @@ export function usePlayer(
     // state
     provider,
     track,
+    /** 当前歌来自 unified search 时的跨平台 sources（歌词多源回退用）。
+     *  ref 的更新总是先于 setTrack，所以 render 时读到的一定是当前歌的。 */
+    currentSources:
+      currentUnifiedRef.current?.sources.map((s) => ({
+        platform: s.platform,
+        trackId: s.trackId,
+      })) ?? undefined,
     playing,
     currentTime,
     duration,

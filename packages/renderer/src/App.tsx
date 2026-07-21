@@ -42,7 +42,7 @@ export default function App() {
 
   const player = usePlayer(audioRef, wpsRef);
   const volume = useVolume(audioRef, player.track);
-  const lyrics = useLyrics(player.track, player.provider);
+  const lyrics = useLyrics(player.track, player.provider, player.currentSources);
   const auth = useAuth(player.provider, player.loadNextTrack, player.setError);
   const reco = useReco(player.playSearch, player.setError);
   const theme = useTheme();
@@ -213,6 +213,9 @@ export default function App() {
             lyrics={lyrics.lyrics}
             currentTime={player.currentTime}
             loading={lyrics.loading}
+            synced={lyrics.synced}
+            source={lyrics.source}
+            track={player.track}
             onSeek={player.seek}
           />
         </div>

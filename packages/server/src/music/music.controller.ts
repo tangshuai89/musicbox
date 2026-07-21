@@ -11,7 +11,11 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { MusicService, type LikeMeta } from './music.service';
-import { normalizeProvider, MusicProvider } from '../common/provider';
+import {
+  normalizeProvider,
+  MusicProvider,
+  MUSIC_PROVIDERS,
+} from '../common/provider';
 import { SessionService } from '../common/session';
 import { DeezerMusicProvider } from './deezer.provider';
 import { QqQuality } from './qq.provider';
@@ -30,6 +34,25 @@ function parseMeta(m: unknown): LikeMeta | undefined {
       ? o.duration
       : 0;
   return { title: o.title, artist: o.artist, duration };
+}
+
+/** 宽松解析 `sources=platform:trackId,platform:trackId` 查询参数。
+ *  未知平台 / 缺 trackId 的条目直接丢弃（不 400）。trackId 里可能有
+ *  冒号以外的任意字符，所以只按第一个冒号切。 */
+function parseSourcesParam(
+  raw: string | undefined,
+): Array<{ platform: MusicProvider; trackId: string }> {
+  if (!raw) return [];
+  const out: Array<{ platform: MusicProvider; trackId: string }> = [];
+  for (const part of raw.split(',')) {
+    const idx = part.indexOf(':');
+    if (idx <= 0) continue;
+    const platform = part.slice(0, idx) as MusicProvider;
+    const trackId = part.slice(idx + 1);
+    if (!MUSIC_PROVIDERS.includes(platform) || !trackId) continue;
+    out.push({ platform, trackId });
+  }
+  return out;
 }
 
 @Controller('music')
@@ -605,16 +628,44 @@ export class MusicController {
   async lyrics(
     @Query('provider') provider: string,
     @Query('trackId') trackId: string,
+    @Query('sources') sources: string | undefined,
+    @Query('title') title: string | undefined,
+    @Query('artist') artist: string | undefined,
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
     const session = this.sessionService.resolve(req, res);
-    const lyrics = await this.musicService.getLyrics(
+    const result = await this.musicService.getLyricsAggregated(
       session,
       normalizeProvider(provider),
       trackId ?? '',
+      parseSourcesParam(sources),
+      title ?? '',
+      artist ?? '',
     );
-    return { lyrics };
+    return { lyrics: result.lines, synced: result.synced, source: result.source };
+  }
+
+  /**
+   * Lyrics availability probe for search-result rows. Only checks the
+   * platform sources (never lyrics.ovh — probing a whole result page
+   * against a third party would be abusive); results land in the same
+   * server-side cache the full lyrics fetch uses.
+   *
+   * Query: sources=platform:trackId,platform:trackId,...
+   * Response: { available: boolean, source: MusicProvider | null }
+   */
+  @Get('lyrics/availability')
+  async lyricsAvailability(
+    @Query('sources') sources: string | undefined,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const session = this.sessionService.resolve(req, res);
+    return this.musicService.getLyricsAvailability(
+      session,
+      parseSourcesParam(sources),
+    );
   }
 
 }

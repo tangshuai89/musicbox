@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { searchUnified } from '../../api';
+import { searchUnified, fetchLyricsAvailability } from '../../api';
 import type { UnifiedSearchItem } from '../../api';
 import { formatDuration } from '../../lib/format';
 import Modal from '../common/Modal';
@@ -16,6 +16,9 @@ interface Props {
 
 const PAGE_SIZE = 20;
 const DEBOUNCE_MS = 300;
+/** 歌词可用性探测的并发上限——服务端逐源串行查，客户端再限并发，
+ *  避免一页 20 行同时把平台歌词接口打成突发流量。 */
+const LYRICS_PROBE_CONCURRENCY = 3;
 /** 搜索发起超过这个时间还没拿到结果，就显示"暂无结果"——避免慢响应时的
  *  "什么也没显示"白屏感。实际结果回来后会立即被真实数据覆盖。 */
 const EMPTY_TIMEOUT_MS = 3000;
@@ -36,6 +39,8 @@ export default function SearchPanel({ onPlay, onClose }: Props) {
   /** 搜索发起后 3 秒仍 loading → 标记 timedOut，显示"暂无结果"占位。 */
   const [emptyTimedOut, setEmptyTimedOut] = useState(false);
   const [searched, setSearched] = useState(false);
+  /** item.id → 歌词是否可用。缺键 = 还在探测/未探测。 */
+  const [lyricsAvail, setLyricsAvail] = useState<Record<string, boolean>>({});
 
   const abortRef = useRef<AbortController | null>(null);
   const emptyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -144,6 +149,44 @@ export default function SearchPanel({ onPlay, onClose }: Props) {
     };
   }, []);
 
+  // 歌词可用性探测：结果列表变化后，对还没探过的行限并发逐个问服务端
+  // （服务端有缓存，命中后再打开歌词面板是即时的）。新搜索发起时
+  // abort 正在飞的探测，已拿到的结果按 item.id 缓存不作废。
+  useEffect(() => {
+    if (items.length === 0) return;
+    const pending = items.filter((it) => !(it.id in lyricsAvail));
+    if (pending.length === 0) return;
+    const controller = new AbortController();
+    let idx = 0;
+    const worker = async () => {
+      while (idx < pending.length && !controller.signal.aborted) {
+        const item = pending[idx++];
+        try {
+          const available = await fetchLyricsAvailability(
+            item.sources.map((s) => ({
+              platform: s.platform,
+              trackId: s.trackId,
+            })),
+            controller.signal,
+          );
+          if (!controller.signal.aborted) {
+            setLyricsAvail((prev) => ({ ...prev, [item.id]: available }));
+          }
+        } catch {
+          // 探测失败不写入——下次 items 变化时重试
+        }
+      }
+    };
+    for (let i = 0; i < LYRICS_PROBE_CONCURRENCY; i++) {
+      void worker();
+    }
+    return () => {
+      controller.abort();
+    };
+    // lyricsAvail 只在这个 effect 里被写，放进依赖会自触发死循环。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
+
   const handleRowClick = (index: number) => {
     const item = items[index];
     if (!item || !item.bestSource) return; // 全平台无版权，灰态不可点
@@ -236,6 +279,15 @@ export default function SearchPanel({ onPlay, onClose }: Props) {
                   ))}
                 </div>
               </div>
+              {lyricsAvail[it.id] && (
+                <span
+                  className="search-lyrics-badge"
+                  title="有歌词（多源聚合）"
+                  aria-label="有歌词"
+                >
+                  词
+                </span>
+              )}
               {playable ? (
                 <svg
                   className="search-play-icon"

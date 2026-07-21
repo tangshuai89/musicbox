@@ -53,6 +53,8 @@ const qq = {
 const deezer = {};
 const spotify = {}; // 未登录 → canSyncLike=false → 匹配时跳过
 const match = {};
+const lyricsOvh = { getLyrics: async () => null };
+
 
 const likeSync = new LikeSyncQueue(); // 真队列，跑后台 discover + 同步
 const svc = new MusicService(
@@ -61,6 +63,7 @@ const svc = new MusicService(
   netease,
   deezer,
   spotify,
+  lyricsOvh,
   match,
   likeSync,
 );
