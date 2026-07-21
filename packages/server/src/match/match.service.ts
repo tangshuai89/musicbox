@@ -7,18 +7,25 @@ import type { UnifiedSearchItem } from '../music/types';
 import type { MusicProvider } from '../common/provider';
 import { withTimeout } from '../common/timeout';
 import { buildUnifiedItems, dedupTracks, normalizeKey } from '../music/search.util';
+import { jaroWinkler } from './fuzzy';
 
 /** 跨平台匹配候选 + 置信度。 */
 export interface MatchResult {
   seed: Track;
   equivalents: Partial<Record<MusicProvider, Track>>;
   /**
+   * 每个平台候选的匹配分数。
+   *  - strict normalizeKey 命中 = 1.0
+   *  - fuzzy 兜底命中 = jaroWinkler 分数（0.88..1.0）
+   *  - 缺席平台 = undefined
+   *
+   * 阶段 C 新增：UI 层可据此显示"模糊匹配"提示。
+   */
+  scores: Partial<Record<MusicProvider, number>>;
+  /**
    * - 'exact': 所有非 seed 平台都搜到了 **strict normalizeKey** 等价的版本
-   *            （duration gate 验过）。v2 比 v1 多一道"strict key 一致"门槛。
-   * - 'fuzzy': 部分平台 strict 找到 / 部分平台 fuzzy 找到 / 部分缺席的混合。
-   *            v2 在 strict 没命中且 duration gate 通过时仍允许 fuzzy 命中
-   *            （见 pickBest 的兜底），但 *fuzzy 的 UI 提示将留给阶段 C 加*
-   *            score 字段后再开。
+   *            （duration gate 验过；score === 1）。
+   * - 'fuzzy': 部分平台 strict 找到 / 部分 fuzzy 找到 / 部分缺席的混合。
    * - 'none':  没有任何非 seed 平台找到（连 fuzzy 都没命中）。
    */
   confidence: 'exact' | 'fuzzy' | 'none';
@@ -30,6 +37,26 @@ const DURATION_TOLERANCE_SEC = 3;
 const SEARCH_TIMEOUT_MS = 5_000;
 /** 单次 search 拉多少条候选（多查询变体后，按平台聚合后通常 ≤ N * V）。 */
 const TOP_N_PER_SEARCH = 5;
+/**
+ * Fuzzy 兜底（阶段 C）的 JW 阈值。≥ 0.88 才视为命中。
+ * 取 0.88 是经验值：1-2 字符错字大约 0.92-0.97；2-3 字差异约 0.85。
+ *
+ * 不要轻易下调——会和用户选的"保守保留版本差异"政策冲突。
+ */
+const FUZZY_THRESHOLD = 0.88;
+/**
+ * Fuzzy 兜底的长度差硬门。
+ * |candLen - seedLen| / max(candLen, seedLen) > 此值 → 视为不同版本/不同歌曲
+ * 直接跳过 fuzzy。
+ *
+ * 为什么需要：纯 Jaro-Winkler 对"前缀 + 后缀差异"型（如 (Live)、(Remix)、
+ * (伴奏) 之类长 4-6 字符的版本标签）会给出 ~0.85-0.92 的高相似度，但语义
+ * 是不同版本，不应合并。长度差硬门在 JW 之前把这些过滤掉。
+ *
+ * 0.15 ≈ 15% 长度差异以内才考虑 fuzzy。Live / Remix 等版本标签一般会带
+ * 来 4-6 字符差异（10-30%），刚好落在门外。
+ */
+const FUZZY_LENGTH_RATIO_GATE = 0.15;
 
 /**
  * 阶段 B 的额外搜索变体数量：query 形态数量。
@@ -121,26 +148,35 @@ export class MatchService {
 
     const seedKey = normalizeKey(seed.title, seed.artist);
     const equivalents: Partial<Record<MusicProvider, Track>> = {};
+    const scores: Partial<Record<MusicProvider, number>> = {};
     let strictFound = 0;
-    let looseFound = 0;
+    let foundCount = 0;
     for (const p of otherProviders) {
       const candidates = byProvider.get(p) ?? [];
       const picked = this.pickBest(candidates, seed, seedKey);
       if (picked) {
-        equivalents[p] = picked;
-        looseFound++;
-        if (normalizeKey(picked.title, picked.artist) === seedKey) strictFound++;
+        equivalents[p] = picked.track;
+        scores[p] = picked.score;
+        foundCount++;
+        if (picked.score === 1) strictFound++;
       }
     }
 
-    // Confidence（v2）：所有非 seed 平台都 strict 命中 = exact；部分找到
-    // （含 fuzzy 命中）= fuzzy；全没 = none。
+    // Confidence（v2 + 阶段 C）：
+    //   - exact = 所有非 seed 平台都 strict 命中（score === 1）
+    //   - fuzzy = 部分找到（含 fuzzy 兜底）/ 部分缺席
+    //   - none  = 所有平台都没找到
     let confidence: MatchResult['confidence'];
-    if (looseFound === 0) confidence = 'none';
+    if (foundCount === 0) confidence = 'none';
     else if (strictFound === otherProviders.length) confidence = 'exact';
     else confidence = 'fuzzy';
 
-    return { seed, equivalents, confidence };
+    return {
+      seed,
+      equivalents,
+      scores,
+      confidence,
+    };
   }
 
   /**
@@ -160,8 +196,11 @@ export class MatchService {
   /**
    * 从候选中挑最合适的，按优先级：
    *   1. duration gate：与 seed.duration 差 ≤ ±3s（或任一侧 ≤ 0 视作通过）
-   *   2. strict normalizeKey 相等 → 取首条命中
-   *   3. 当前 v2：无 strict 命中 → 视为该平台缺席（fuzzy 兜底留给阶段 C）。
+   *   2. strict normalizeKey 相等 → 取首条命中（score=1）
+   *   3. （阶段 C）fuzzy 兜底：在 duration 内候选里，按 Jaro-Winkler 算
+   *      normalized key 相似度，取 ≥ FUZZY_THRESHOLD 且分数最高的那条。
+   *      但**先过长度差硬门** — Live/Remix 版本标签一般带来 4-6 字符差异，
+   *      长度门（±15%）会把它们剔出 fuzzy 候选。
    *
    * 返回 null = 该平台没找到。
    */
@@ -169,13 +208,32 @@ export class MatchService {
     candidates: Track[],
     seed: Track,
     seedKey: string,
-  ): Track | null {
+  ): { track: Track; score: number } | null {
     const inDuration = candidates.filter((c) => this.inDurationTolerance(c, seed));
     if (!inDuration.length) return null;
+
+    // Tier 1: strict normalizeKey 相等 → score = 1
     const strict = inDuration.find(
       (c) => normalizeKey(c.title, c.artist) === seedKey,
     );
-    return strict ?? null;
+    if (strict) return { track: strict, score: 1 };
+
+    // Tier 2: fuzzy 兜底（阶段 C）
+    let best: { track: Track; score: number } | null = null;
+    for (const c of inDuration) {
+      const candKey = normalizeKey(c.title, c.artist);
+      // 长度差硬门：先剔出版本标签引发的"前缀 + 后缀差异"
+      const lenDiff =
+        Math.abs(candKey.length - seedKey.length) /
+        Math.max(candKey.length, seedKey.length);
+      if (lenDiff > FUZZY_LENGTH_RATIO_GATE) continue;
+
+      const score = jaroWinkler(seedKey, candKey);
+      if (score >= FUZZY_THRESHOLD && (!best || score > best.score)) {
+        best = { track: c, score };
+      }
+    }
+    return best;
   }
 
   private inDurationTolerance(c: Track, seed: Track): boolean {
