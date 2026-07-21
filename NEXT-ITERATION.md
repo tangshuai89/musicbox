@@ -92,8 +92,8 @@ DeepSeek 推荐、跨平台 fan-out ❤、visionOS 风 Bento UI。
   - 词句点击 copy、点击 share (生成带 cover 的图分享到…哪都行，本地下载)
   - "无歌词" 时引导用户从网易云提交（链过去）
 - **验收**：
-  - [ ] 跨平台搜索结果行右侧显示 lyrics 可用性指示
-  - [ ] 复制整段歌词 vs 单行（toast 反馈）
+  - [x] 跨平台搜索结果行右侧显示 lyrics 可用性指示
+  - [x] 复制整段歌词 vs 单行（toast 反馈）
 - **风险**：第三方 lyrics API 合规（GGD 之类），先不碰
 - **估时**：2–3 天
 

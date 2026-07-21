@@ -52,6 +52,8 @@ const spotify = {
   },
 };
 const match = {};
+const lyricsOvh = { getLyrics: async () => null };
+
 // 同步队列 stub：搜索路径用不到，只需让构造函数里的 register* 不炸。
 const likeSync = {
   registerProcessor: () => {},
@@ -65,6 +67,7 @@ const svc = new MusicService(
   netease,
   deezer,
   spotify,
+  lyricsOvh,
   match,
   likeSync,
 );
@@ -102,6 +105,7 @@ async function main() {
       netease,
       deezer,
       spotify,
+      lyricsOvh,
       match,
       likeSync,
     );

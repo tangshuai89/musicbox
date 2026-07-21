@@ -17,7 +17,7 @@
     "build": "npm run build:server && npm run build:renderer && npm run build:electron",
     "lint": "cd packages/renderer && npm run lint",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "cd packages/server && ts-node src/music/search.test.ts && ts-node src/match/match.test.ts && ts-node src/reco/reco.test.ts && ts-node src/music/spotify.test.ts && ts-node src/music/qq.provider.test.ts && ts-node src/common/storage.test.ts && ts-node src/music/like.e2e.test.ts && ts-node src/music/search-unified.e2e.test.ts && ts-node src/music/library-import.e2e.test.ts && ts-node src/music/cross-platform-match.e2e.test.ts && ts-node src/music/like-sync.queue.test.ts"
+    "test": "cd packages/server && ts-node src/music/search.test.ts && ts-node src/match/match.test.ts && ts-node src/reco/reco.test.ts && ts-node src/music/spotify.test.ts && ts-node src/music/qq.provider.test.ts && ts-node src/common/storage.test.ts && ts-node src/music/like.e2e.test.ts && ts-node src/music/search-unified.e2e.test.ts && ts-node src/music/library-import.e2e.test.ts && ts-node src/music/cross-platform-match.e2e.test.ts && ts-node src/music/like-sync.queue.test.ts && ts-node src/music/lyrics-aggregate.e2e.test.ts"
   },
   "author": "tangshuai89",
   "license": "MIT",

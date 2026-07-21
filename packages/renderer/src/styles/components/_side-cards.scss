@@ -127,6 +127,107 @@
   animation: placeholder-pulse 2s ease-in-out infinite;
 }
 
+// ── Lyrics toolbar (source badge + copy-all / share) ──
+.lyrics-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lyrics-source-badge {
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: var(--text-tertiary);
+  border: 1px solid color-mix(in oklab, var(--text-tertiary) 35%, transparent);
+  border-radius: 999px;
+  padding: 1px 7px;
+  line-height: 1.5;
+}
+
+.lyrics-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+}
+
+.lyrics-action-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  transition: color 0.2s ease, background 0.2s ease;
+
+  &:hover {
+    color: var(--text-primary);
+    background: color-mix(in oklab, var(--text-tertiary) 12%, transparent);
+  }
+}
+
+// Per-line hover copy button lives in a row wrapper so it doesn't shift the
+// lyric text; the seek button keeps the full row width.
+.lyrics-line-row {
+  display: flex;
+  align-items: center;
+
+  .lyrics-line {
+    flex: 1 1 auto;
+  }
+}
+
+.lyrics-line-copy {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.lyrics-line-row:hover .lyrics-line-copy,
+.lyrics-line-copy:focus-visible {
+  opacity: 1;
+}
+
+.lyrics-line-copy:hover {
+  color: var(--text-primary);
+}
+
+// Transient toast for copy/share feedback, anchored to the card bottom.
+.lyrics-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  background: color-mix(in oklab, var(--text-primary) 85%, transparent);
+  color: var(--bg-primary, #fff);
+  font-size: 11px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  pointer-events: none;
+  white-space: nowrap;
+  animation: placeholder-pulse 2s ease-in-out infinite;
+}
+
+.lyrics-submit-link {
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: none;
+  margin-top: 4px;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
 .side-card-label {
   font-size: 10px;
   font-weight: 700;

@@ -62,6 +62,7 @@ const match = {
     );
   },
 };
+const lyricsOvh = { getLyrics: async () => null };
 const likeSync = {
   registerProcessor: () => {},
   registerDiscoverResolver: () => {},
@@ -75,6 +76,7 @@ const svc = new MusicService(
   netease,
   deezer,
   spotify,
+  lyricsOvh,
   match,
   likeSync,
 );

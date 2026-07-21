@@ -5,6 +5,7 @@ import { QqMusicProvider } from './qq.provider';
 import { NeteaseMusicProvider } from './netease.provider';
 import { DeezerMusicProvider } from './deezer.provider';
 import { SpotifyMusicProvider } from './spotify.provider';
+import { LyricsOvhProvider } from './lyricsovh.provider';
 import { CommonModule } from '../common/common.module';
 import { MatchService } from '../match/match.service';
 import { LikeSyncQueue } from './like-sync.queue';
@@ -20,6 +21,7 @@ import { LikeSyncQueue } from './like-sync.queue';
     NeteaseMusicProvider,
     DeezerMusicProvider,
     SpotifyMusicProvider,
+    LyricsOvhProvider,
   ],
   exports: [MusicService, MatchService, SpotifyMusicProvider],
 })
