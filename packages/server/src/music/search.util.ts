@@ -13,15 +13,51 @@ import type { MusicProvider } from '../common/provider';
 
 export type RawSearchEntry = { track: Track; platform: MusicProvider };
 
-/** 歌名+歌手标准化: 全角→半角、去空格、去标点、全小写。 */
+/**
+ * 歌名+歌手归一化：把 title 和 artist 拼成一个跨平台匹配键。
+ *
+ * 关键约束：**保守保留"版本差异"**（specs/match-engine/spec.md 的 v2 决策）。
+ *   - 不剥掉括号 / 引号里的内容——(Live) / (现场版) 这类版本标签必须保留，
+ *     不能把「海阔天空 (Live)」与「海阔天空」视为同一首。
+ *   - 只做「同一首歌的不同写法」归一：半/全角括号、em-dash / en-dash、智能
+ *     引号、中文书名号这些。如果阶段 C 的 fuzzy 兜底启用，到时候再放宽。
+ *
+ * 流水线：
+ *   1) 全角 ASCII (U+FF01..U+FF5E) → 半角
+ *   2) 全角括号 / 方头括号 / 书名号 → 半角
+ *   3) 各种 dash 类（em-dash / en-dash / figure / full-width hyphen-minus /
+ *      katakana 长音号）→ '-'
+ *   4) 智能引号 / 中文书名号 → 直引号
+ *   5) 合并连续的"空白 + 标点 + 半角括号 + 直引号 + dash"到一组噪声字符并整段压缩
+ *   6) 全小写
+ */
 export function normalizeKey(title: string, artist: string): string {
   const raw = `${title} ${artist}`
-    // 全角 → 半角
+    // 1) 全角 ASCII（FF01..FF5E）→ 半角
     .replace(/[！-～]/g, (ch) =>
       String.fromCharCode(ch.charCodeAt(0) - 0xFEE0),
     )
-    // 去掉空格、常见标点
-    .replace(/[\s\-_,.()（）【】《》'"′″·&+/!?！？:：;；]+/g, '')
+    // 2) 全角括号 / 方头括号 / 书名号 → 半角（让下游 strip 类统一处理）
+    .replace(/[（）【】《》]/g, (ch) =>
+      ch === '（' ? '(' :
+      ch === '）' ? ')' :
+      ch === '【' ? '[' :
+      ch === '】' ? ']' :
+      ch === '《' ? '<' :
+      ch === '》' ? '>' :
+      ch,
+    )
+    // 3) 各种 dash → '-'（U+2010..U+2015 = hyphen / non-breaking / figure /
+    //    en-dash / em-dash / minus-bar；U+2212 = 数学 minus；U+FF0D = 全角
+    //    hyphen-minus；U+30FC = 片假名长音号「ー」）
+    .replace(/[\u2010-\u2015\u2212\uFF0D\u30FC]/g, '-')
+    // 4) 智能引号 / 中文书名号 → 直引号
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[「」『』]/g, '"')
+    // 5) 噪声字符合并：空白 + 标点 + 半角括号 + 直引号 + dash
+    .replace(/[\s\-_,.()\[\]<>'"′″·&+\/!?！？:：;；]+/g, '')
+    // 6) 全小写
     .toLowerCase();
   return raw;
 }

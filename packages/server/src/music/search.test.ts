@@ -84,6 +84,74 @@ function makeTrack(
   console.log('✅ 3. 全角半角');
 }
 
+// ── 3a. 半角 vs 全角括号（保留括号内容）────────────────────
+{
+  const a = normalizeKey('海阔天空 (Live)', 'Beyond');
+  const b = normalizeKey('海阔天空（Live）', 'Beyond');
+  assert.strictEqual(a, b, '半/全角圆括号应统一');
+  console.log(`✅ 3a. 半/全角圆括号归一 ("海阔天空 (Live)" → "${a}")`);
+}
+
+// ── 3b. 半角 vs 方头括号 [ ] / 【 】───────────────────────
+{
+  const a = normalizeKey('海阔天空 [Live]', 'Beyond');
+  const b = normalizeKey('海阔天空【Live】', 'Beyond');
+  assert.strictEqual(a, b, '半/全角方括号应统一');
+  console.log(`✅ 3b. 半/全角方括号归一`);
+}
+
+// ── 3c. 半角尖括号 vs 中文书名号 < > / 《 》──────────────────
+{
+  const a = normalizeKey('海阔天空 <Live>', 'Beyond');
+  const b = normalizeKey('海阔天空《Live》', 'Beyond');
+  assert.strictEqual(a, b, '半角尖括号 / 中文书名号应统一');
+  console.log(`✅ 3c. 半角尖括号 / 中文书名号归一`);
+}
+
+// ── 3d. em-dash / en-dash / 全角 hyphen / 长音号 → 半角 hyphen ─────
+{
+  const base = normalizeKey('海阔天空 - Live', 'Beyond');
+  assert.strictEqual(base, normalizeKey('海阔天空 — Live', 'Beyond'),
+    'em-dash (U+2014) 应归一');
+  assert.strictEqual(base, normalizeKey('海阔天空 – Live', 'Beyond'),
+    'en-dash (U+2013) 应归一');
+  assert.strictEqual(base, normalizeKey('海阔天空 ‐ Live', 'Beyond'),
+    'hyphen (U+2010) 应归一');
+  assert.strictEqual(base, normalizeKey('海阔天空 ー Live', 'Beyond'),
+    'katakana 长音号 (U+30FC) 应归一');
+  console.log('✅ 3d. 横线类符号归一（5 种 dash 形式）');
+}
+
+// ── 3e. 智能引号 → 直引号 ──────────────────────────────────
+{
+  const base = normalizeKey("海阔天空 'Live'", 'Beyond');
+  assert.strictEqual(base, normalizeKey('海阔天空 \u2018Live\u2019', 'Beyond'),
+    "U+2018/U+2019 单弯引号应归一");
+  assert.strictEqual(base, normalizeKey('海阔天空 \u201CLive\u201D', 'Beyond'),
+    'U+201C/U+201D 双弯引号应归一');
+  assert.strictEqual(base, normalizeKey('海阔天空 \u300CLive\u300D', 'Beyond'),
+    '日式直角引号「」应归一');
+  console.log('✅ 3e. 智能引号 / 中文书名号归一');
+}
+
+// ── 3f. 保守：保留版本差异（保守策略）─────────────────────
+{
+  const liveKey = normalizeKey('海阔天空 (Live)', 'Beyond');
+  const albumKey = normalizeKey('海阔天空', 'Beyond');
+  assert.notStrictEqual(liveKey, albumKey,
+    '带 Live 标签 vs 无标签应视为不同版本（保守策略）');
+  console.log(`✅ 3f. 保守保留「(Live)」vs「」版本差异`);
+}
+
+// ── 3g. 保守：英文 vs 中文标签不互并 ──────────────────────
+{
+  const enLive = normalizeKey('海阔天空 (Live)', 'Beyond');
+  const cnLive = normalizeKey('海阔天空 (现场版)', 'Beyond');
+  assert.notStrictEqual(enLive, cnLive,
+    '英文 Live vs 中文「现场版」应视为不同版本（保守策略）');
+  console.log('✅ 3g. 保守保留「Live」vs「现场版」版本差异');
+}
+
 // ── 4. 不同歌 → 各自保留 ─────────────────────────────────────
 {
   const all = [
