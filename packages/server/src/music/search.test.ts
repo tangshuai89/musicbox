@@ -12,6 +12,7 @@ const assert = require('node:assert');
 
 const {
   normalizeKey,
+  stripFeatTags,
   dedupTracks,
   buildUnifiedItems,
   PLAY_PRIORITY,
@@ -150,6 +151,60 @@ function makeTrack(
   assert.notStrictEqual(enLive, cnLive,
     '英文 Live vs 中文「现场版」应视为不同版本（保守策略）');
   console.log('✅ 3g. 保守保留「Live」vs「现场版」版本差异');
+}
+
+// ── 3h. 阶段 D: stripFeatTags 单独测 ─────────────────────
+{
+  // 括号形式：`(feat. X)` 全/半角括号都剥
+  assert.strictEqual(stripFeatTags('Bad Guy (feat. Justin Bieber)'), 'Bad Guy',
+    '半角括号 feat.');
+  assert.strictEqual(stripFeatTags('Bad Guy（feat. Justin Bieber）'), 'Bad Guy',
+    '全角括号 feat.');
+  // featuring / ft. / 无点都覆盖
+  assert.strictEqual(stripFeatTags('Bad Guy featuring Justin Bieber'), 'Bad Guy',
+    'featuring');
+  assert.strictEqual(stripFeatTags('Bad Guy ft. Justin Bieber'), 'Bad Guy',
+    'ft.');
+  assert.strictEqual(stripFeatTags('Bad Guy feat Justin Bieber'), 'Bad Guy',
+    'feat 无点');
+  // 联入形式（无括号）
+  assert.strictEqual(stripFeatTags('Bad Guy, feat. Justin Bieber'), 'Bad Guy',
+    '前置逗号 + feat');
+  // Live / Remix 不动
+  assert.strictEqual(stripFeatTags('Bad Guy (Live)'), 'Bad Guy (Live)',
+    '(Live) 不动');
+  assert.strictEqual(stripFeatTags('Bad Guy (Remix)'), 'Bad Guy (Remix)',
+    '(Remix) 不动');
+  // feat + Live 共存：只剥 feat 部分（多余空格会被 .trim() 收掉为单空格）
+  assert.strictEqual(
+    stripFeatTags('Bad Guy (feat. Justin Bieber) (Live)'),
+    'Bad Guy (Live)',
+    '(feat. X) (Live) 仅剥 feat 部分',
+  );
+  // "with" 不动（避免误剥 "with Strings" 这种版本修饰）
+  assert.strictEqual(stripFeatTags('Bad Guy with Strings'), 'Bad Guy with Strings',
+    'with 不动');
+  // 没 feat 关键词的多艺人表不动
+  assert.strictEqual(stripFeatTags('Billie Eilish, Justin Bieber'),
+    'Billie Eilish, Justin Bieber',
+    '"B, J" 多艺人表不动（缺 feat 关键词）');
+  // 边界
+  assert.strictEqual(stripFeatTags(''), '', '空串');
+  assert.strictEqual(stripFeatTags('Bad Guy'), 'Bad Guy', '无 feat');
+  console.log('✅ 3h. 阶段 D: stripFeatTags 单独 11 case 全过');
+}
+
+// ── 3i. 阶段 D: normalizeKey 集成 — feat 跨写法匹配 ───────
+{
+  // title 同，artist 同，唯一差异是 title 上的 (feat. X)
+  const base = normalizeKey('Bad Guy', 'Billie Eilish');
+  assert.strictEqual(normalizeKey('Bad Guy (feat. Justin Bieber)', 'Billie Eilish'), base,
+    'title 上的 (feat. X) 整个被剥');
+  assert.strictEqual(normalizeKey('Bad Guy featuring Justin Bieber', 'Billie Eilish'), base,
+    'inline featuring 也剥');
+  assert.strictEqual(normalizeKey('Bad Guy', 'Billie Eilish feat. Justin Bieber'), base,
+    'artist 里的 feat. 也剥');
+  console.log('✅ 3i. 阶段 D: normalizeKey 跨写法归一 4 case 通过');
 }
 
 // ── 4. 不同歌 → 各自保留 ─────────────────────────────────────

@@ -14,6 +14,45 @@ import type { MusicProvider } from '../common/provider';
 export type RawSearchEntry = { track: Track; platform: MusicProvider };
 
 /**
+ * 剥掉字符串里的「feat./featuring/ft. <name>」标签。
+ *
+ * 两种形式：
+ *   - 括号形式：`(feat. Name)` / `（feat. Name）` / `(Featuring Name1 & Name2)` ...
+ *   - 联入形式：`Song, feat. Name` / `Song feat. Name` / `Song ft. Name` ...
+ *
+ * **不动**：
+ *   - `(Live)` / `(Remix)` / `(伴奏)` 等版本标签——那些是 v1 保守策略要保留
+ *     的差异，跟 feat 标签性质不同
+ *   - `(With Strings)` / `(With Drums)` 等 —— "with" 不在 regex 里，不会误剥
+ *   - 多艺人表 `"Billie Eilish, Justin Bieber"` —— 缺 "feat." 关键词，
+ *     不会被当作 feat 标签；那种多艺人结构是另一种问题，留 v3 解决
+ *
+ * 在 `normalizeKey` 流水线之前调用，让 feat 相关字符不进 key。
+ */
+export function stripFeatTags(s: string): string {
+  if (!s) return s;
+  let out = s;
+
+  // 1) 括号形式：`(feat. Name)` `（feat. Name）` `[feat. Name]` `【feat. Name】`
+  //    内含 feat / featuring / ft.(?).+，贪婪匹配到对应右括号（含全角）
+  out = out.replace(
+    /[(（\[【〔](?:feat\.?|featuring|ft\.?)\s+[^)）\]】〕]+[)）\]】〕]/gi,
+    '',
+  );
+
+  // 2) 联入形式：`Song, feat. Name` / `Song feat. Name`(EOL) /
+  //    `Song & feat. Name` / `Song / feat. Name` / `Song ft. Name`
+  //    跟着前缀可以空格 / 逗号；feat 关键词后到下一个分隔符（,/&/）
+  //    或字符串尾。
+  out = out.replace(
+    /\s*,?\s*(?:feat\.?|featuring|ft\.?)\s+[^,;&\/]+?(?=\s*(?:,|\s*&|\s*\/|$))/gi,
+    '',
+  );
+
+  return out.replace(/\s+/g, ' ').trim();
+}
+
+/**
  * 歌名+歌手归一化：把 title 和 artist 拼成一个跨平台匹配键。
  *
  * 关键约束：**保守保留"版本差异"**（specs/match-engine/spec.md 的 v2 决策）。
@@ -21,8 +60,12 @@ export type RawSearchEntry = { track: Track; platform: MusicProvider };
  *     不能把「海阔天空 (Live)」与「海阔天空」视为同一首。
  *   - 只做「同一首歌的不同写法」归一：半/全角括号、em-dash / en-dash、智能
  *     引号、中文书名号这些。如果阶段 C 的 fuzzy 兜底启用，到时候再放宽。
+ *   - 阶段 D：先跑 `stripFeatTags` 把 feat/featuring/ft. + 名字 标签整个剥掉，
+ *     这样跨平台 feat 写法差异（"Bad Guy (feat. X)" vs "Bad Guy"）能匹配。
+ *     注意：手动剥 `(Live)` 等版本标签 *不在* 这里——那是冲突的。
  *
  * 流水线：
+ *   0) [阶段 D] 剥 feat 标签
  *   1) 全角 ASCII (U+FF01..U+FF5E) → 半角
  *   2) 全角括号 / 方头括号 / 书名号 → 半角
  *   3) 各种 dash 类（em-dash / en-dash / figure / full-width hyphen-minus /
@@ -32,7 +75,8 @@ export type RawSearchEntry = { track: Track; platform: MusicProvider };
  *   6) 全小写
  */
 export function normalizeKey(title: string, artist: string): string {
-  const raw = `${title} ${artist}`
+  const stripped = `${stripFeatTags(title)} ${stripFeatTags(artist)}`;
+  const raw = stripped
     // 1) 全角 ASCII（FF01..FF5E）→ 半角
     .replace(/[！-～]/g, (ch) =>
       String.fromCharCode(ch.charCodeAt(0) - 0xFEE0),
