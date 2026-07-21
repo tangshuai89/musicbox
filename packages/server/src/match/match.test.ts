@@ -219,5 +219,105 @@ void (async () => {
   console.log(`✅ 12. 阶段 B: 多任务并行耗时上限 (${elapsed}ms)`);
 }
 
-console.log('\n🎉 全部 12 个测试通过');
+// ── 13. 阶段 C: fuzzy 兜底 — 1 字符 typo 命中 ──────────────
+// strict 不命中，但 JW 算出来命中阈值。
+// seed normalized: "海阔天空beyond" (10 chars)
+// candidate: "海阔天蜜beyond" (10 chars, 1 char typo at position 3)
+// → JW 约 0.883
+{
+  const seed = makeTrack({ title: '海阔天空', artist: 'Beyond', duration: 270, provider: 'qq', id: 'q1' });
+  const neCandidates = [
+    // 1-字 typo（normalized 后: 海阔天蜜beyond vs 海阔天空beyond → JW ~0.883）
+    makeTrack({ title: '海阔天蜜', artist: 'Beyond', duration: 270, provider: 'netease', id: 'typo-1' }),
+  ];
+  const m = new MatchService(
+    fakeProvider('qq', []),
+    fakeProvider('ne', neCandidates),
+    fakeProvider('de', []),
+  );
+  const r: any = await m.findEquivalent(seed);
+  assert.ok(r.equivalents.netease, 'fuzzy 应命中 typo 候选');
+  assert.strictEqual(r.equivalents.netease.id, 'typo-1');
+  assert.strictEqual(r.confidence, 'fuzzy', 'fuzzy 命中 → confidence=fuzzy');
+  assert.ok(r.scores.netease > 0.88 && r.scores.netease < 1,
+    `scores.netease 应在 (0.88, 1) 之间（实际 ${r.scores.netease}）`);
+  console.log(`✅ 13. 阶段 C: 1 字符 typo 命中 fuzzy (score=${r.scores.netease.toFixed(4)})`);
+}
+
+// ── 14. 阶段 C: 长度差硬门 — Live 版本差异不 fuzzy 并 ──────
+// 用户选"保守保留版本差异"，所以即使 JW 高也不应该把 (Live) 与 album 版合并
+{
+  const seed = makeTrack({ title: '海阔天空 (Live)', artist: 'Beyond', duration: 270, provider: 'qq', id: 'q1' });
+  // Netease 端只有专辑版（无 (Live)），normalized 后长度差很大 → 长度门 reject
+  const neCandidates = [
+    makeTrack({ title: '海阔天空', artist: 'Beyond', duration: 270, provider: 'netease', id: 'album-1' }),
+  ];
+  const m = new MatchService(
+    fakeProvider('qq', []),
+    fakeProvider('ne', neCandidates),
+    fakeProvider('de', []),
+  );
+  const r: any = await m.findEquivalent(seed);
+  assert.strictEqual(r.equivalents.netease, undefined,
+    '即使 JW=0.9，长度差 > 15% 触发硬门 → 不命中');
+  assert.strictEqual(r.confidence, 'none', '保守策略：版本差异不 fuzzy');
+  console.log('✅ 14. 阶段 C: 长度差硬门保护——Live 版本差异不被 fuzzy 并');
+}
+
+// ── 15. 阶段 C: 严格优先于 fuzzy ────────────────────
+// 候选里同时有 strict 和 fuzzy 命中 → strict 拿满分 1.0
+{
+  const seed = makeTrack({ title: '海阔天空', artist: 'Beyond', duration: 270, provider: 'qq', id: 'q1' });
+  const neCandidates = [
+    makeTrack({ title: '海阔天空 beyong', artist: 'Beyond', duration: 270, provider: 'netease', id: 'fuzzy-1' }),
+    makeTrack({ title: '海阔天空', artist: 'Beyond', duration: 270, provider: 'netease', id: 'strict-1' }),
+    makeTrack({ title: '海阔天空', artist: 'Beyond', duration: 270, provider: 'netease', id: 'strict-2' }),
+  ];
+  const m = new MatchService(
+    fakeProvider('qq', []),
+    fakeProvider('ne', neCandidates),
+    fakeProvider('de', []),
+  );
+  const r: any = await m.findEquivalent(seed);
+  assert.strictEqual(r.equivalents.netease.id, 'strict-1', 'strict 命中优先于 fuzzy');
+  assert.strictEqual(r.scores.netease, 1, 'strict 命中 score=1');
+  console.log('✅ 15. 阶段 C: strict 优先于 fuzzy（首条命中）');
+}
+
+// ── 16. 阶段 C: 全 strict 命中 → confidence=exact ──────────
+// 注：阶段 B 测试 4 已经覆盖"双平台 strict 命中 → exact"，本测试验证
+// 阶段 C 没有破坏它。
+{
+  const seed = makeTrack({ title: '晴天', artist: '周杰伦', duration: 269, provider: 'qq', id: 'q1' });
+  const m = new MatchService(
+    fakeProvider('qq', []),
+    fakeProvider('ne', [makeTrack({ title: '晴天', artist: '周杰伦', duration: 269, id: 'n1' })]),
+    fakeProvider('de', [makeTrack({ title: '晴天', artist: '周杰伦', duration: 269, id: 'd1' })]),
+  );
+  const r: any = await m.findEquivalent(seed);
+  assert.strictEqual(r.confidence, 'exact');
+  assert.strictEqual(r.scores.netease, 1);
+  assert.strictEqual(r.scores.deezer, 1);
+  console.log('✅ 16. 阶段 C: 全 strict → confidence=exact (兼容阶段 B 行为)');
+}
+
+// ── 17. 阶段 C: 部分 strict + 部分 fuzzy → confidence=fuzzy ──
+// 一个平台 strict 命中 + 一个平台 fuzzy 命中 → confidence = 'fuzzy'
+{
+  const seed = makeTrack({ title: '海阔天空', artist: 'Beyond', duration: 270, provider: 'qq', id: 'q1' });
+  const m = new MatchService(
+    fakeProvider('qq', []),
+    fakeProvider('ne', [makeTrack({ title: '海阔天空', artist: 'Beyond', duration: 270, id: 'n-strict' })]),
+    fakeProvider('de', [makeTrack({ title: '海阔天蜜', artist: 'Beyond', duration: 270, id: 'd-typo' })]),
+  );
+  const r: any = await m.findEquivalent(seed);
+  assert.strictEqual(r.equivalents.netease.id, 'n-strict');
+  assert.ok(r.equivalents.deezer, 'deezer typo 应该 fuzzy 命中');
+  assert.strictEqual(r.confidence, 'fuzzy', '部分 strict + 部分 fuzzy = fuzzy');
+  assert.strictEqual(r.scores.netease, 1, 'strict 命中=1');
+  assert.ok(r.scores.deezer > 0.88, `deezer typo 命中 score>0.88（实际 ${r.scores.deezer}）`);
+  console.log(`✅ 17. 阶段 C: strict + fuzzy 混合 → confidence=fuzzy (deezer score=${r.scores.deezer.toFixed(4)})`);
+}
+
+console.log('\n🎉 全部 17 个测试通过');
 })();
