@@ -9,6 +9,7 @@ import {
 } from 'electron';
 import * as path from 'path';
 import { spawn, ChildProcess } from 'node:child_process';
+import * as fs from 'node:fs';
 
 // Pin the app name so userData / logs land under a stable, branded dir in
 // BOTH dev and packaged mode (~/Library/Application Support/Maestro). Without
@@ -236,6 +237,10 @@ function createWindow(): void {
       // Electron 内创建子 BrowserWindow 而不是跳系统浏览器——这样才能共享
       // session cookie storage，使 login 完成后的 cookie 在主窗口 poll 时可见。
       nativeWindowOpen: true,
+      // Widevine DRM：Spotify WPS 需要 EME + Widevine CDM 播放全曲
+      // 否则 SDK 初始化报 EMEError: No supported keysystem was found
+      plugins: true,
+      autoplayPolicy: 'no-user-gesture-required',
     } as Electron.WebPreferences,
   });
 
@@ -665,6 +670,30 @@ ipcMain.on('player:state', (_event, state: PlaybackState) => {
 });
 
 // ── App lifecycle ───────────────────────────────────────────────────────────
+
+// Widevine DRM：Spotify WPS SDK 需要 EME + Widevine CDM。Electron 31 不内置，
+// 从 Chrome 的 Widevine CDM 借用。没 Chrome 则静默降级，Free 路径不受影响。
+(function loadWidevineCdm() {
+  try {
+    const chromeBase = '/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions';
+    if (!fs.existsSync(chromeBase)) { console.log('[main] Chrome not found, skipping Widevine CDM'); return; }
+    const vers = fs.readdirSync(chromeBase).filter(v => /^\d+\.\d+\.\d+\.\d+$/.test(v)).sort();
+    if (!vers.length) { console.log('[main] no Chrome version dirs'); return; }
+    const latestVer = vers[vers.length - 1];
+    const cdmDir = path.join(chromeBase, latestVer, 'Libraries', 'WidevineCdm');
+    if (!fs.existsSync(cdmDir)) { console.log('[main] Chrome WidevineCdm dir not found'); return; }
+    const manifest = JSON.parse(fs.readFileSync(path.join(cdmDir, 'manifest.json'), 'utf8'));
+    const platformDir = fs.readdirSync(path.join(cdmDir, '_platform_specific')).find(d => d.startsWith('mac_'));
+    if (!platformDir) { console.log('[main] no platform dir for Widevine'); return; }
+    const cdmPath = path.join(cdmDir, '_platform_specific', platformDir, 'libwidevinecdm.dylib');
+    if (!fs.existsSync(cdmPath)) { console.log('[main] libwidevinecdm.dylib not found at', cdmPath); return; }
+    app.commandLine.appendSwitch('widevine-cdm-path', cdmPath);
+    app.commandLine.appendSwitch('widevine-cdm-version', manifest.version);
+    console.log('[main] Widevine CDM loaded from Chrome:', manifest.version, platformDir);
+  } catch (err) {
+    console.error('[main] Widevine CDM load failed, Spotify WPS will not play full tracks:', err);
+  }
+})();
 
 // Spotify OAuth：注册 maestro:// 自定义协议，回调时 macOS / Windows 调起 app
 if (process.defaultApp) {
