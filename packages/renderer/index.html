@@ -17,10 +17,17 @@
   </head>
   <body>
     <div id="root"></div>
-    <!-- Spotify Web Playback SDK. Loads only the script (no auto-init);
-         spotify-wps.ts calls window.Spotify.Player when the user actually
-         has a Premium spotify session. SdkLazy load by `defer` so it doesn't
-         block first paint. -->
+    <!-- Spotify WPS SDK 加载时（不论 defer 多少），一 ready 就调
+         window.onSpotifyWebPlaybackSDKReady() 全局回调——不挂会 throw。
+         我们不挂自动 player（Premium 才接 WPS），只标记 sdkReady 旗位，
+         useSpotifyWpsPlayer 接到旗位后再视 tier 决定是否 connect。 -->
+    <script>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).onSpotifyWebPlaybackSDKReady = () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (window as any).__wpsSdkReady = true;
+      };
+    </script>
     <script src="https://sdk.scdn.co/spotify-player.js" defer></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
