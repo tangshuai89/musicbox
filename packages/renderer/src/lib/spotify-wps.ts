@@ -109,16 +109,23 @@ type SpotifySdk = NonNullable<typeof window.Spotify>;
 
 let sdkPromise: Promise<SpotifySdk> | null = null;
 
-/** 等待 SDK 脚本（index.html 已经 defer 加载）。 */
+/** 等待 SDK 脚本（index.html 已经 defer 加载）。
+ *  不 poll window.Spotify（那可能还没初始化完就开始建 Player 崩溃），
+ *  改用 __wpsSdkReady 旗位——index.html 的 onSpotifyWebPlaybackSDKReady
+ *  被 SDK 调用后才置 true。 */
 function waitForSdk(): Promise<SpotifySdk> {
-  if (window.Spotify) return Promise.resolve(window.Spotify);
+  if ((window as unknown as { __wpsSdkReady?: boolean }).__wpsSdkReady && window.Spotify) {
+    return Promise.resolve(window.Spotify);
+  }
   if (sdkPromise) return sdkPromise;
   sdkPromise = new Promise<SpotifySdk>((resolve, reject) => {
     const start = Date.now();
     const tick = () => {
-      if (window.Spotify) return resolve(window.Spotify);
+      if ((window as unknown as { __wpsSdkReady?: boolean }).__wpsSdkReady && window.Spotify) {
+        return resolve(window.Spotify);
+      }
       if (Date.now() - start > 5000) {
-        return reject(new Error('spotify-wps: SDK script 未在 5s 内 ready'));
+        return reject(new Error('spotify-wps: SDK 未在 5s 内 ready'));
       }
       setTimeout(tick, 50);
     };
