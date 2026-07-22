@@ -236,7 +236,7 @@ function createWindow(): void {
       // Electron 内创建子 BrowserWindow 而不是跳系统浏览器——这样才能共享
       // session cookie storage，使 login 完成后的 cookie 在主窗口 poll 时可见。
       nativeWindowOpen: true,
-    },
+    } as Electron.WebPreferences,
   });
 
   if (isDev) {
