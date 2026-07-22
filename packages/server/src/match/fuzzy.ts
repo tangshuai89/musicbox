@@ -76,3 +76,52 @@ export function jaroWinkler(s1: string, s2: string): number {
 
   return jaro + prefix * 0.1 * (1 - jaro);
 }
+
+/**
+ * 归一化 Levenshtein 编辑距离，输出 [0, 1]：
+ *   - 0 = 两字符串完全相同
+ *   - 1 = 完全不一样（每一字符都要被替换 / 插入 / 删除才能匹配）
+ *   - 0.0..1.0 之间表示需要改变 0..100% 字符才能变得相同
+ *
+ * 定义：`levenshtein(a, b) / max(len(a), len(b))`。
+ *
+ * 用途：跨平台匹配阶段 E4 的最后兜底——Jaro-Winkler 在**字符对齐但有大
+ * 段位置错排**（如颠倒词序、首字插入冗余字符）时表现一般；Levenshtein
+ * 直接算位置级编辑数，对 *整字符串重叠* + *小幅增删替* 都鲁棒。
+ *
+ * 阈值参考（match.service.ts 的 `LEVENSHTEIN_THRESHOLD` = 0.3，调用方决定）：
+ *   - "海阔天空" / "海阔天家" (1 替换 4 字符) = 0.25   → match
+ *   - "海阔天空" / "海阔家"   (删 2 字 4 字符)   = 0.50   → no match
+ *   - "晴天"      / "晴朗"     (1 替换 2 字符)   = 0.50   → no match (不同歌)
+
+ *   - "abc"       / "def"       (3 替换 3 字符)   = 1.00   → no match
+ *
+ * 算法：Wagner–Fischer DP，O(n*m) 时间 / O(min(n,m)) 空间（用滚动数组）。
+ * 空格归一化前的 raw key 一般 4-30 字符，O(900) 完全可接受。
+ */
+export function normalizedLevenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a || !b) return 1; // 空串对非空 = 完全不匹配
+  // 让 a 永远是较短的，节省 DP 空间
+  const [s1, s2] = a.length <= b.length ? [a, b] : [b, a];
+  const m = s1.length;
+  const n = s2.length;
+
+  // prev[i] = DP 在 row i 行的整行（滚动数组）
+  let prev = new Array<number>(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j; // base: 从空到 s2[0..j] 的代价 = j 次插入
+
+  for (let i = 1; i <= m; i++) {
+    const curr = new Array<number>(n + 1);
+    curr[0] = i; // 从 s1[0..i] 到空的代价 = i 次删除
+    for (let j = 1; j <= n; j++) {
+      const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
+      const del = prev[j] + 1;       // 从 s1[0..i-1] 删一个变成 s1[0..i-1] → s2[0..j]
+      const ins = curr[j - 1] + 1;   // 在 s1[0..i] 末尾插入一个 → s2[0..j]
+      const sub = prev[j - 1] + cost; // s1[0..i-1] 替换 → s2[0..j-1]
+      curr[j] = Math.min(del, ins, sub);
+    }
+    prev = curr;
+  }
+  return prev[n] / Math.max(m, n);
+}

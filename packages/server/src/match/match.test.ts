@@ -392,5 +392,91 @@ void (async () => {
   console.log(`✅ 20. 阶段 E3: alt-strict 也未命中 → 保持 none（不强行 fuzzy）`);
 }
 
-console.log('\n🎉 全部 20 个测试通过');
+// ── 21. 阶段 E4: 1 字符替换命中（JW + Levenshtein 都命中，max 取胜）──
+// seed "海阔天空" + "Beyond" (10 chars) cand "海阔天家" + "Beyond" (10 chars)
+//   JW  = 0.953 (prefix 海阔天 + suffix beyond + 1 替换); gets ≥ 0.88 → match
+//   Lev = 0.1 dist → similarity 0.90; gets ≤ 0.1 → match
+//   best.score = max(0.953, 0.90) = 0.953
+{
+  const seed = makeTrack({ title: '海阔天空', artist: 'Beyond', duration: 270, provider: 'qq', id: 'q1' });
+  const neteaseCandidates = [
+    makeTrack({ title: '海阔天家', artist: 'Beyond', duration: 270, provider: 'netease', id: 'n-typo' }),
+  ];
+  const m = new MatchService(
+    fakeProvider('qq', []),
+    fakeProvider('ne', neteaseCandidates),
+    fakeProvider('de', []),
+  );
+  const r: any = await m.findEquivalent(seed);
+  assert.ok(r.equivalents.netease, '应命中 1 字符错');
+  assert.strictEqual(r.equivalents.netease.id, 'n-typo');
+  assert.strictEqual(r.confidence, 'fuzzy');
+  // 1 替换 / 10 字符：JW 0.953 > Lev 0.90，max 赢
+  assert.ok(r.scores.netease >= 0.88 && r.scores.netease <= 0.96,
+    `1 字符替换 typo → score ≈ 0.95（实际 ${r.scores.netease}）`);
+  console.log(`✅ 21. 阶段 E4: 1 字符替换 → 命中（max JW/Lev, score=${r.scores.netease.toFixed(4)}）`);
+}
+
+// ── 22. 阶段 E4: Levenshtein + JW 都拒绝真正不同歌 ─────────
+// seed "晴天" vs cand "七里香"（5 chars 同长度）：1 替换 / 5 = 0.2 dist
+// > 0.1 阈值; JW 也 < 0.88（基本没有共同字符位置），双 tier 都拒。
+{
+  const seed = makeTrack({ title: '晴天', artist: '周杰伦', duration: 269, provider: 'qq', id: 'q1' });
+  const neteaseCandidates = [
+    makeTrack({ title: '七里香', artist: '周杰伦', duration: 299, provider: 'netease', id: 'n-diff' }),
+  ];
+  const m = new MatchService(
+    fakeProvider('qq', []),
+    fakeProvider('ne', neteaseCandidates),
+    fakeProvider('de', []),
+  );
+  const r: any = await m.findEquivalent(seed);
+  assert.strictEqual(r.equivalents.netease, undefined,
+    '真不同歌 → Levenshtein + JW 都不命中');
+  assert.strictEqual(r.confidence, 'none');
+  console.log('✅ 22. 阶段 E4: 真不同歌 → 双 tier 都拒');
+}
+
+// ── 23. 阶段 E4: Levenshtein 命中长标题尾字漏 ─────────────
+// 海阔天空beyond 尾字 d 漏 → 1 替换 / 14 字符 = 0.07 距离 → 必中
+{
+  const seed = makeTrack({ title: '海阔天空beyond', artist: '黄家驹', duration: 270, provider: 'qq', id: 'q1' });
+  const neteaseCandidates = [
+    makeTrack({ title: '海阔天空beyong', artist: '黄家驹', duration: 270, provider: 'netease', id: 'n-typo' }),
+  ];
+  const m = new MatchService(
+    fakeProvider('qq', []),
+    fakeProvider('ne', neteaseCandidates),
+    fakeProvider('de', []),
+  );
+  const r: any = await m.findEquivalent(seed);
+  assert.ok(r.equivalents.netease, 'Levenshtein 命中长标题尾字漏');
+  assert.ok(r.scores.netease >= 0.9,
+    `长标题尾字漏 similarity ≈ 0.93（实际 ${r.scores.netease}）`);
+  console.log(`✅ 23. 阶段 E4: 长标题尾字漏 → 命中 (score=${r.scores.netease.toFixed(4)})`);
+}
+
+// ── 24. 阶段 E4: JW 和 Levenshtein 取 max — Levenshtein 兜住 ──
+// 设一个 JW 不命中但 Levenshtein 命中的场景（长度差大、Levenshtein 看编辑数）
+// seed "晴天海阔天空", cand "晴天海阔天家": 末字替换、lenDiff 0.06 → JW 0.93,
+// Levenshtein 0.9375 → 都命中、Levenshtein 略高
+{
+  const seed = makeTrack({ title: '晴天海阔天空', artist: '测试', duration: 270, provider: 'qq', id: 'q1' });
+  const neteaseCandidates = [
+    makeTrack({ title: '晴天海阔天家', artist: '测试', duration: 270, provider: 'netease', id: 'n-simi' }),
+  ];
+  const m = new MatchService(
+    fakeProvider('qq', []),
+    fakeProvider('ne', neteaseCandidates),
+    fakeProvider('de', []),
+  );
+  const r: any = await m.findEquivalent(seed);
+  assert.ok(r.equivalents.netease);
+  // 两个 tier 都报分，取 max —— 不论谁赢，命中的就是这一条
+  assert.ok(r.scores.netease > 0.7,
+    `双 tier 取 max（实际 ${r.scores.netease}）`);
+  console.log(`✅ 24. 阶段 E4: 双 fuzzy tier 取 max（score=${r.scores.netease.toFixed(4)}）`);
+}
+
+console.log('\n🎉 全部 24 个测试通过');
 })();

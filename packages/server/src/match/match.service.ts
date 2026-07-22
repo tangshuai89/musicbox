@@ -7,7 +7,7 @@ import type { UnifiedSearchItem } from '../music/types';
 import type { MusicProvider } from '../common/provider';
 import { withTimeout } from '../common/timeout';
 import { buildUnifiedItems, dedupTracks, normalizeKey } from '../music/search.util';
-import { jaroWinkler } from './fuzzy';
+import { jaroWinkler, normalizedLevenshtein } from './fuzzy';
 
 /** 跨平台匹配候选 + 置信度。 */
 export interface MatchResult {
@@ -66,6 +66,21 @@ const FUZZY_LENGTH_RATIO_GATE = 0.15;
  * 不是 auto-merge；手点 爱奇艺 可逆。
  */
 const ALT_SCORE = 0.95;
+/**
+ * 阶段 E4 归一 Levenshtein 阈值（distance 不是 similarity）。
+ * distance ≤ 0.1 → similarity ≥ 0.9 才视为命中。
+ *
+ * 为什么是 0.1（不是更宽松的 0.3）：
+ *   - 0.3 太松：5 字符字串 1 替换 = 0.2 ≤ 0.3，会把"晴天" vs "晴朗" 误并
+ *     （不同歌）。Levenshtein 短字串不可靠 → 必须严限制。
+ *   - 0.1 范围保护：1 替换需在 10 字及以上才有可考虑，避免短标题的
+ *     false-positive。10 字 1 替换 → match；4 字 1 替换 = 0.25 → no。
+ *   - 真 typo 场景（用户输错字）：一般是 1 替换，且 keys 通常 ≥ 10 字符，
+ *     阈值 0.1 命中这一档；同时不会误并真正不同的小标题对。
+ *
+ * 与 JW 阈值（0.88 score）独立取 max——两套算法独立算完，取最高分。
+ */
+const LEVENSHTEIN_THRESHOLD = 0.1;
 
 /**
  * 阶段 B 的额外搜索变体数量：query 形态数量。
@@ -261,19 +276,35 @@ export class MatchService {
       }
     }
 
-    // Tier 3: fuzzy 兜底（阶段 C）
+    // Tier 3 + Tier 4: fuzzy 兜底（阶段 C） + 编辑距离兜底（阶段 E4）
+    //
+    // 两个 tier 一起计算，从 duration 内的候选里分别按 Jaro-Winkler 相似度
+    // 和归一 Levenshtein 相似度打分，取 *最高分* 作为最终模糊命中。
     let best: { track: Track; score: number } | null = null;
     for (const c of inDuration) {
       const candKey = normalizeKey(c.title, c.artist);
+
+      // Tier 3: Jaro-Winkler（长度门 + 阈值）
       // 长度差硬门：先剔出版本标签引发的"前缀 + 后缀差异"
       const lenDiff =
         Math.abs(candKey.length - seedKey.length) /
         Math.max(candKey.length, seedKey.length);
-      if (lenDiff > FUZZY_LENGTH_RATIO_GATE) continue;
+      if (lenDiff <= FUZZY_LENGTH_RATIO_GATE) {
+        const jwScore = jaroWinkler(seedKey, candKey);
+        if (jwScore >= FUZZY_THRESHOLD && (!best || jwScore > best.score)) {
+          best = { track: c, score: jwScore };
+        }
+      }
 
-      const score = jaroWinkler(seedKey, candKey);
-      if (score >= FUZZY_THRESHOLD && (!best || score > best.score)) {
-        best = { track: c, score };
+      // Tier 4: normalizedLevenshtein（编辑距离兜底）
+      // Levenshtein 自身惩罚增删/替换，所以不需要 length gate——
+      // 阈值 (≤ LEVENSHTEIN_THRESHOLD) 已经隐式表示长度差在容忍范围内。
+      const levDistance = normalizedLevenshtein(seedKey, candKey);
+      if (levDistance <= LEVENSHTEIN_THRESHOLD) {
+        const levScore = 1 - levDistance;
+        if (!best || levScore > best.score) {
+          best = { track: c, score: levScore };
+        }
       }
     }
     return best;

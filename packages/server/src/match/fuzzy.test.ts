@@ -1,10 +1,10 @@
 /**
- * 阶段 C: Jaro-Winkler 实现单测（Node built-in assert）。
+ * 阶段 C/D: Jaro-Winkler + Normalized Levenshtein 实现单测。
  * 运行: npx ts-node packages/server/src/match/fuzzy.test.ts
  */
 export {};
 const assert = require('node:assert');
-const { jaroWinkler } = require('./fuzzy');
+const { jaroWinkler, normalizedLevenshtein } = require('./fuzzy');
 
 // ── 1. 完全相同 → 1 ─────────────────────────────────
 {
@@ -106,4 +106,65 @@ const { jaroWinkler } = require('./fuzzy');
   console.log(`✅ 10. 完全无关 = ${score.toFixed(4)} (应 <0.7)`);
 }
 
-console.log('\n🎉 全部 8 个 jaroWinkler 测试通过');
+// ──────────────────────────────────────────────────────────────────────
+// 阶段 E4: normalizedLevenshtein 算法单测
+// ──────────────────────────────────────────────────────────────────────
+
+// ── 11. 相同 → 0 —— 旧 jaroWinkler 是 1，本函数是 0（距离，非相似度）──
+{
+  assert.strictEqual(normalizedLevenshtein('abc', 'abc'), 0, '相同字符串');
+  assert.strictEqual(normalizedLevenshtein('', ''), 0, '空对空');
+  assert.strictEqual(normalizedLevenshtein('海阔天空', '海阔天空'), 0, 'CJK 相同');
+  console.log('✅ 11. 完全相同 → distance 0');
+}
+
+// ── 12. 空串 vs 非空 → 1（最长字符全删/插）────────────────
+{
+  assert.strictEqual(normalizedLevenshtein('', '海阔天空'), 1, '空 vs 4 字符 = 全删 = 1.0');
+  assert.strictEqual(normalizedLevenshtein('海阔天空', ''), 1, '4 字符 vs 空 = 全插 = 1.0');
+  console.log('✅ 12. 空 vs 非空 → distance 1.0');
+}
+
+// ── 13. 1 字符替换（4 字符标题）─────────────────
+{
+  // "海阔天空" vs "海阔天家" — 同长度、位置 3 不同
+  // 1 次替换 / 4 字符 = 0.25
+  const d = normalizedLevenshtein('海阔天空', '海阔天家');
+  assert.strictEqual(d, 0.25,
+    `1 替换 / 4 字符应 = 0.25（实际 ${d.toFixed(4)}）`);
+  console.log(`✅ 13. 4 字符 1 替换 = ${d.toFixed(4)} (阈值 0.3 之内的命中)`);
+}
+
+// ── 14. 1 字符末位删除（短标题尾字漏）──────────────
+{
+  // "海阔天空beyong" vs "海阔天空beyond" (尾 'd' 漏)
+  // 1 次插入 / 13 字符 = 1/13 ≈ 0.077
+  const d = normalizedLevenshtein('海阔天空beyong', '海阔天空beyond');
+  assert.ok(d < 0.15,
+    `1 字符漏 / 13 字符应 <0.15（实际 ${d.toFixed(4)}）`);
+  console.log(`✅ 14. 尾字漏 = ${d.toFixed(4)} (低于 0.15)`);
+}
+
+// ── 15. 完全不同 ──────────────────────────────────
+{
+  assert.strictEqual(normalizedLevenshtein('晴天', '海阔'), 1,
+    '完全不同字符 → 全替换 = 1.0');
+  assert.strictEqual(normalizedLevenshtein('abc', 'xyz'), 1,
+    'Latin 全替换');
+  console.log('✅ 15. 完全无关 → distance 1.0');
+}
+
+// ── 16. 阈值边界（0.3 是阶段 E4 的工程阈值）────────
+{
+  // 短标题 1 替换 = 0.5 > 0.3 → 应 NOT match
+  const diff = normalizedLevenshtein('晴天', '晴朗');
+  assert.ok(diff > 0.3,
+    `短标题 1 替换 = ${diff.toFixed(4)}, 应 > 0.3 阈值（不同歌）`);
+  // 中等标题 1 替换 = 0.25 < 0.3 → match
+  const typo = normalizedLevenshtein('海阔天空', '海阔天家');
+  assert.ok(typo < 0.3,
+    `4 字 1 替换 = ${typo.toFixed(4)}, 应 < 0.3 阈值（typo 命中）`);
+  console.log(`✅ 16. 阈值边界: ${diff.toFixed(4)} > 0.3, ${typo.toFixed(4)} < 0.3`);
+}
+
+console.log('\n🎉 全部 10 个模糊匹配测试通过（含 6 个 Levenshtein 新增）');
