@@ -581,6 +581,15 @@ export function usePlayer(
     void detectAndApplyLiked(currentUnifiedRef.current);
   }, [detectAndApplyLiked]);
 
+  /** WPS 连上后重切当前歌——从 30s 预览路径切换到 WPS 全曲路径。 */
+  const refreshTrackForWps = useCallback(() => {
+    const cur = trackRef.current;
+    const unified = currentUnifiedRef.current;
+    if (cur && unified && cur.provider === 'spotify') {
+      presentTrack(cur, unified);
+    }
+  }, [presentTrack]);
+
   const loadNextTrack = useCallback(async () => {
     if (!provider) return;
     // Search / reco / liked-library mode: advance within the results queue.
@@ -1142,6 +1151,7 @@ export function usePlayer(
     handleLike,
     handleDislike,
     refreshLikedState,
+    refreshTrackForWps,
     seek,
     resetForSwitch,
   };

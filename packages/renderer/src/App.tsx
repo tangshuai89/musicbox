@@ -54,9 +54,15 @@ export default function App() {
   const wps = useSpotifyWpsPlayer({ enabled: wpsEnabled });
   wpsRef.current = wps;
 
-  // WPS → progress bar：把 SDK 上报的播放位置 / 时长喂回 usePlayer，让
-  // ProgressBar / 时间轴与其它平台一致。
-  const applyWpsProgress = player.applyWpsProgress;
+  // 当 WPS 从 disconnected → connected 时，当前歌如果已经在播（30s 预览），
+  // 需要重调 presentTrack 让 usePlayer 切到 WPS 全曲播放路径。
+  useEffect(() => {
+    if (wps.wpsReady && player.track?.provider === 'spotify') {
+      console.log('[wps] ready — refreshTrackForWps');
+      player.refreshTrackForWps();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wps.wpsReady]);
   useEffect(() => {
     if (wps.wpsReady && wps.state.hasTrack) {
       applyWpsProgress(wps.state.positionMs, wps.state.track?.durationMs ?? 0);
