@@ -184,7 +184,7 @@ export function useAuth(
         // 等 main process 的 spotify:oauth-protocol IPC
         const result = await new Promise<{ code: string; state: string }>(
           (resolve) => {
-            const handler = (_event: unknown, data: { code: string; state: string }) => {
+            const handler = (data: { code: string; state: string }) => {
               window.electronAPI!.removeListener('spotify:oauth-protocol', handler);
               resolve(data);
             };

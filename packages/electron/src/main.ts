@@ -685,9 +685,23 @@ app.on('open-url', (event, url) => {
     const parsed = new URL(url);
     const code = parsed.searchParams.get('code');
     const state = parsed.searchParams.get('state');
-    if (code && state && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('spotify:oauth-protocol', { code, state });
+    console.log('[main] parsed code:', code, 'state:', state);
+    if (!code || !state) {
+      console.error('[main] open-url 缺 code 或 state，忽略');
+      return;
     }
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      console.error('[main] mainWindow 尚未就绪，延迟 1s 再试');
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          console.log('[main] 延迟推送 spotify:oauth-protocol');
+          mainWindow.webContents.send('spotify:oauth-protocol', { code, state });
+        }
+      }, 1000);
+      return;
+    }
+    console.log('[main] IPC send spotify:oauth-protocol');
+    mainWindow.webContents.send('spotify:oauth-protocol', { code, state });
   } catch (err) {
     console.error('[main] open-url parse failed:', err);
   }
