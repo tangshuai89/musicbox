@@ -670,6 +670,10 @@ ipcMain.on('player:state', (_event, state: PlaybackState) => {
 
 // ── App lifecycle ───────────────────────────────────────────────────────────
 
+// 强制 Chromium 启用 EME + Widevine 组件。即使没外部 CDM，这个 flag 让
+// Chromium 自身尝试加载系统级别的 Widevine（如果 macOS 有的话）。
+app.commandLine.appendSwitch('enable-features', 'EncryptedMedia');
+
 // Spotify OAuth：注册 maestro:// 自定义协议，回调时 macOS / Windows 调起 app
 if (process.defaultApp) {
   if (process.argv.length >= 2) {
