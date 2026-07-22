@@ -45,6 +45,9 @@ export interface WpsWrapper {
   onStateChange(cb: WpsStateCallback): () => void;
   /** 用新 token 重新连接（refresh 轮换时）。会断开旧 player 再建。 */
   connect(token: string): Promise<void>;
+  /** 仅刷新内部 getToken（不重建 connection）。用在 token 1h 到期续期时，
+   *  让 SDK 的 getOAuthToken 回调能拿到新 token，无需打断当前播放。 */
+  refreshToken(token: string): void;
   /** 断开 + 不再 connect。 */
   disconnect(): void;
   /** 播放 spotify:track:{id} 或 spotify:uri。SDK 内部会切到本设备。 */
@@ -314,6 +317,9 @@ export function createWpsWrapper(): WpsWrapper {
     },
     onStateChange,
     connect,
+    refreshToken(token: string): void {
+      getToken = async () => token;
+    },
     disconnect,
     play,
     resume,

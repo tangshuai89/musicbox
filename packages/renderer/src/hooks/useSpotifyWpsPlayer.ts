@@ -91,8 +91,11 @@ export function useSpotifyWpsPlayer({ enabled }: Options): UseSpotifyWpsPlayer {
             if (cancelled) return;
             const remaining = cur.expiresAt - Date.now();
             if (remaining < TOKEN_REFRESH_LEAD_MS) {
-              await w.connect(cur.accessToken);
-              setWpsReady(true);
+              // 仅刷新 token，不重建 connection —— 避免 disconnect→connect 之间
+              // 的播放秒停（v2 已知限制：$w.connect() 会断旧 player 再建新。
+              // 修复：不重连，只让 SDK 的 getOAuthToken 回调在下次 WebSocket 续连
+              // 时拿到新 token）。
+              w.refreshToken(cur.accessToken);
             }
           } catch (err) {
             // token 端点失败时保持现有连接（WPS 自己会断），下次 tick 再试
