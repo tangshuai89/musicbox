@@ -244,8 +244,8 @@ export function createWpsWrapper(): WpsWrapper {
       });
       bindListeners(p);
       // 在 connect 前先声明 error 监听
-      p.on('initialization_error', onError('initialization_error'));
-      p.on('account_error', onError('account_error'));
+      p.on('initialization_error', (e: unknown) => console.warn('[spotify-wps] initialization_error:', e));
+      p.on('account_error', (e: unknown) => console.warn('[spotify-wps] account_error:', e));
       const ok = await p.connect();
       if (!ok) {
         throw new Error('spotify-wps: connect() 返 false');
