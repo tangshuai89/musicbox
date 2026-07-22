@@ -8,6 +8,7 @@ import {
   Req,
   Res,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { MusicService, type LikeMeta } from './music.service';
@@ -57,6 +58,8 @@ function parseSourcesParam(
 
 @Controller('music')
 export class MusicController {
+  private readonly logger = new Logger(MusicController.name);
+
   constructor(
     private readonly musicService: MusicService,
     private readonly sessionService: SessionService,
@@ -511,9 +514,28 @@ export class MusicController {
     res.status(upstream.status);
 
     const { Readable } = await import('stream');
-    Readable.fromWeb(
+    const upstreamReadable = Readable.fromWeb(
       upstream.body as unknown as import('stream/web').ReadableStream,
-    ).pipe(res);
+    );
+
+    // upstream fetch 被中断时不挂进程：
+    //   - upstream body 抛错（CDN keep-alive 超时 / 网络抖动 / Range 中断）
+    //     → 不挂 process，让 res 自然结束。
+    //   - 客户端 res 关了（用户换歌 / 关 tab / seek cancel）→ 主动 destroy
+    //     upstream，别再读 QQ 的 quota。
+    upstreamReadable.on('error', (err) => {
+      // logged at debug：CDN 偶发 reset 是常态，进度日志不需要 warn。
+      this.logger.debug(
+        `proxyAudio upstream stream error (likely CDN reset / client ` +
+          `disconnect): ${err.message}`,
+      );
+      if (!res.writableEnded) res.end();
+    });
+    res.on('close', () => {
+      if (!upstreamReadable.destroyed) upstreamReadable.destroy();
+    });
+
+    upstreamReadable.pipe(res);
   }
 
   /**
@@ -603,9 +625,20 @@ export class MusicController {
       // every skip-back.
       res.setHeader('Cache-Control', 'public, max-age=3600');
       const { Readable } = await import('stream');
-      Readable.fromWeb(
+      const coverReadable = Readable.fromWeb(
         upstream.body as unknown as import('stream/web').ReadableStream,
-      ).pipe(res);
+      );
+      // 同 proxyAudio：CDN 偶尔 reset 像素大图时 body 会抛 → 不挂进程
+      coverReadable.on('error', (err) => {
+        this.logger.debug(
+          `coverProxy upstream stream error: ${err.message}`,
+        );
+        if (!res.writableEnded) res.end();
+      });
+      res.on('close', () => {
+        if (!coverReadable.destroyed) coverReadable.destroy();
+      });
+      coverReadable.pipe(res);
     } catch (err) {
       res.status(502).json({
         error: 'cover_proxy_failed',
