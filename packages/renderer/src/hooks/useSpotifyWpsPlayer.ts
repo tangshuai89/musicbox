@@ -63,9 +63,7 @@ export function useSpotifyWpsPlayer({ enabled }: Options): UseSpotifyWpsPlayer {
 
     async function init(): Promise<void> {
       try {
-        console.log('[wps hook] init: fetching token...');
         const tok = await getSpotifyToken();
-        console.log('[wps hook] token:', tok.tier, 'expires in', Math.round((tok.expiresAt - Date.now()) / 1000), 's');
         if (cancelled) return;
         if (tok.tier !== 'premium') {
           // 罕见的并发：login 切到 free / premium 切换中 → 不连
@@ -80,7 +78,6 @@ export function useSpotifyWpsPlayer({ enabled }: Options): UseSpotifyWpsPlayer {
           if (!cancelled) setState(s);
         });
         await w.connect(tok.accessToken);
-        console.log('[wps hook] connect ok');
         if (cancelled) { w.disconnect(); return; }
         // 不等 fixed timeout——SDK ready 事件先到才真 ready。
         // 安全上限 15s；期间 emeOk 变为 false 或 ready 不 fire 则退出。
@@ -97,11 +94,9 @@ export function useSpotifyWpsPlayer({ enabled }: Options): UseSpotifyWpsPlayer {
           check();
         });
         if (!ready) {
-          console.log('[wps hook] SDK not ready in time, wpsReady=false (fallback <audio>)');
           setWpsReady(false);
           return;
         }
-        console.log('[wps hook] SDK ready with deviceId, wpsReady=true');
         setWpsReady(true);
 
         // Token 续期定时器：每次 tick 检查 expiresAt；将到期则重拉 + connect

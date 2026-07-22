@@ -50,7 +50,6 @@ export default function App() {
 
   // WPS 仅在 spotify Premium 时启用；Free / 其他 provider 走 <audio> + 30s 预览。
   const wpsEnabled = player.provider === 'spotify' && auth.auth.tier === 'premium';
-  console.log('[wps] enabled=', wpsEnabled, 'provider=', player.provider, 'tier=', auth.auth.tier, 'loggedIn=', auth.auth.loggedIn);
   const wps = useSpotifyWpsPlayer({ enabled: wpsEnabled });
   wpsRef.current = wps;
 
@@ -58,7 +57,6 @@ export default function App() {
   // 需要重调 presentTrack 让 usePlayer 切到 WPS 全曲播放路径。
   useEffect(() => {
     if (wps.wpsReady && player.track?.provider === 'spotify') {
-      console.log('[wps] ready — refreshTrackForWps');
       player.refreshTrackForWps();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

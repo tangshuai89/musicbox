@@ -301,11 +301,6 @@ export function usePlayer(
       // 30s 预览代理，跟 WPS 全曲流冲突（双声道）。WPS 就绪判断懒读 ref。
       if (next.provider === 'spotify' && wpsRef?.current?.wpsReady) {
         audioUrl = '';
-        console.log('[player] spotify track: WPS ready, audioUrl cleared');
-      }
-      // WPS 只适用于 spotify Premium；其他源 / Free 走 <audio> + 30s 预览
-      if (next.provider === 'spotify' && !wpsRef?.current?.wpsReady) {
-        console.log('[player] spotify track: WPS NOT ready, fallback to <audio>');
       }
       if (next.coverUrl) {
         // presentCover reads the ref.current INSIDE its async work, so it

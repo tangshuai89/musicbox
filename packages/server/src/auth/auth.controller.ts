@@ -373,20 +373,17 @@ export class AuthController {
     }
     const session = this.sessionService.resolve(req, res);
     const redirectUri = 'maestro://spotify-callback';
-    console.log('[spotify redeem] sessionId=' + session.id + ' exchanging code...');
     const result = await this.spotify.exchangeCode(
       session.providers.spotify ?? {},
       code,
       state,
       redirectUri,
     );
-    console.log('[spotify redeem] exchange ok, tier=' + result.token.tier + ', profile=' + result.profile.id);
     this.sessionService.setProvider(session, 'spotify', {
       ...session.providers.spotify,
       spotify: result.token,
       nickname: result.profile.displayName,
     });
-    console.log('[spotify redeem] setProvider done');
     return { ok: true, profile: result.profile };
   }
 }

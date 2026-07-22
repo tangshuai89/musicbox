@@ -211,9 +211,6 @@ export function createWpsWrapper(): WpsWrapper {
     const onNotReady = (): void => {
       emit({ hasTrack: false, isPlaying: false, track: null, positionMs: 0 });
     };
-    const onError = (label: string) => (payload: unknown): void => {
-      console.warn(`[spotify-wps] ${label}:`, payload);
-    };
     // SDK 提供 .addListener()，.on() 是 alias
     // 'initial_state' 不是 SDK 正式事件——去掉，只 listen 官方文档的 6 个事件
     const on = (event: string, cb: (p: unknown) => void) => {
@@ -254,10 +251,8 @@ export function createWpsWrapper(): WpsWrapper {
       }
       player = null;
     }
-    try {
-      console.log('[spotify-wps] creating Player, secureContext=', window.isSecureContext);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const p: any = new Spotify.Player({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p: any = new Spotify.Player({
         name: deviceName,
         getOAuthToken: (cb: (t: string) => void) => {
           if (getToken) {
@@ -270,16 +265,10 @@ export function createWpsWrapper(): WpsWrapper {
       });
       bindListeners(p);
       const ok = await p.connect();
-      if (!ok) {
-        throw new Error('spotify-wps: connect() 返 false');
-      }
-      player = p;
-    } catch (err) {
-      console.error('[spotify-wps] creating Player or connect failed:', err);
-      // 补信息：帮排查是 SDK 构造还是 connect() 里报的
-      console.error('[spotify-wps] secureContext=', window.isSecureContext);
-      throw err;
+    if (!ok) {
+      throw new Error('spotify-wps: connect() 返 false');
     }
+    player = p;
   }
 
   function disconnect(): void {
