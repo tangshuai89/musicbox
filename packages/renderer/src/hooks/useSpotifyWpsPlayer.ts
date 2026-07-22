@@ -54,6 +54,7 @@ export function useSpotifyWpsPlayer({ enabled }: Options): UseSpotifyWpsPlayer {
       wrapperRef.current?.disconnect();
       wrapperRef.current = null;
       setWpsReady(false);
+      console.log('[wps hook] disabled, wpsReady=false');
       return;
     }
 
@@ -62,7 +63,9 @@ export function useSpotifyWpsPlayer({ enabled }: Options): UseSpotifyWpsPlayer {
 
     async function init(): Promise<void> {
       try {
+        console.log('[wps hook] init: fetching token...');
         const tok = await getSpotifyToken();
+        console.log('[wps hook] token:', tok.tier, 'expires in', Math.round((tok.expiresAt - Date.now()) / 1000), 's');
         if (cancelled) return;
         if (tok.tier !== 'premium') {
           // 罕见的并发：login 切到 free / premium 切换中 → 不连
@@ -77,6 +80,7 @@ export function useSpotifyWpsPlayer({ enabled }: Options): UseSpotifyWpsPlayer {
           if (!cancelled) setState(s);
         });
         await w.connect(tok.accessToken);
+        console.log('[wps hook] connect ok, wpsReady=true');
         if (cancelled) {
           w.disconnect();
           return;

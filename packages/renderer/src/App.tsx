@@ -49,9 +49,9 @@ export default function App() {
   const deezerEditorials = useDeezerEditorials();
 
   // WPS 仅在 spotify Premium 时启用；Free / 其他 provider 走 <audio> + 30s 预览。
-  const wps = useSpotifyWpsPlayer({
-    enabled: player.provider === 'spotify' && auth.auth.tier === 'premium',
-  });
+  const wpsEnabled = player.provider === 'spotify' && auth.auth.tier === 'premium';
+  console.log('[wps] enabled=', wpsEnabled, 'provider=', player.provider, 'tier=', auth.auth.tier, 'loggedIn=', auth.auth.loggedIn);
+  const wps = useSpotifyWpsPlayer({ enabled: wpsEnabled });
   wpsRef.current = wps;
 
   // WPS → progress bar：把 SDK 上报的播放位置 / 时长喂回 usePlayer，让
