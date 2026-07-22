@@ -318,6 +318,7 @@ export class SpotifyMusicProvider {
         product?: string;
       };
       const rawTier = (p.product ?? 'free').toLowerCase();
+      console.log('[spotify /v1/me] id=' + p.id + ' product=' + p.product + ' rawTier=' + rawTier);
       const tier: SpotifyProductTier =
         rawTier === 'premium' ? 'premium' : rawTier === 'open' ? 'open' : 'free';
       return {
