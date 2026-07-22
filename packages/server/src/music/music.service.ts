@@ -883,6 +883,30 @@ export class MusicService {
     discover?: LikeSyncTask['discover'],
   ): void {
     if (!targets.length && !discover) return;
+    // 全覆盖短路：detect 触发的 discover-only 入队（renderer 在 ❤ 播放后 2.5s
+    // 主动 refreshLikedState → 再次调 detect），并且所有 likeable 平台都已经在
+    // fanOut 里 → 完全跳过队列。否则后台会再跑一遍 resolveEquivalents，打
+    // "no candidates (..., already in fanOut)" debug、跑 6 次指数退避重试、最终
+    // 还是 0 输出。
+    //
+    // 注意边界：这条短路只在 (liked && discover && !targets.length) 三个条件全
+    // 满足时生效——即"redetect 一个已全覆盖的歌"。toggleLike ❤ 按钮点击 +
+    // fanOutLike 首次心 的 path 都不受影响（它们带 targets / 状态不一样）。
+    if (liked && discover && !targets.length) {
+      const state = this.loadState(session);
+      const canonicalId = this.canonicalMergedId(state, mergedId, targets);
+      const fanned = new Set(
+        (state.fanOut[canonicalId] ?? []).map((e) => e.platform),
+      );
+      const allLikeableCovered = (['qq', 'netease', 'spotify'] as MusicProvider[])
+        .every((p) => !this.canSyncLike(session, p) || fanned.has(p));
+      if (allLikeableCovered) {
+        this.logger.debug?.(
+          `like-sync skip enqueue ${mergedId} — fanOut 已全覆盖 likeable 平台`,
+        );
+        return;
+      }
+    }
     this.likeSync.enqueue({ session, mergedId, liked, targets, discover });
   }
 

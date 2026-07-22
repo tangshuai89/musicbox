@@ -207,6 +207,34 @@ async function main() {
     console.log('✅ 4. detect(qq 已红心) → 后台匹配补齐 netease');
   }
 
+  // ── 4b. detect 重跑 — fanOut 已全覆盖 → 不再入队（enqueueLikeSync）────
+  // renderer 侧 refreshLikedState 2.5 秒后再调一次 detect——如果 fanOut 已
+  // 含所有 likeable 平台（qq + netease），这次不应再起 discover、也不得
+  // 多写远端。BUG：老代码会再跑一次 resolveEquivalents（debug 日志：
+  // "no candidates (..., already in fanOut)"）。
+  {
+    const beforeLikes = neteaseLikes.length;
+    // 设一个会污染结果的假搜索——如果进 resolveEquivalents 就会误匹配此条
+    neteaseSearchResults = [neTrack('n-dup', '假搜索结果不应出现', 'X', 215)];
+    const r = await svc.detectLikedAndSync(
+      session,
+      'merged-det', // 复用 test 4 的歌，fanOut 已含 qq + netease
+      [{ platform: 'qq', trackId: 'q-det' }],
+      { title: '告白气球', artist: '周杰伦', duration: 215 },
+    );
+    assert.strictEqual(r.liked, true, '已 fanOut → liked 仍为 true');
+    assert.deepStrictEqual(r.fannedOutTo.sort(), ['netease', 'qq'],
+      'fannedOutTo 不变（含 qq + netease）');
+    // 关键：远端不应多 call netease.like（证明没有新队列任务触发 discover）
+    const afterLikes = neteaseLikes.length;
+    // 等一小段时间，给任何潜在的后台任务时间跑完
+    await new Promise((r) => setTimeout(r, 300));
+    assert.strictEqual(afterLikes, neteaseLikes.length,
+      `不应多 call netease.like（第一次 already fanOut 已写，after 队里不新增）`+
+      `实际 before=${beforeLikes}, after=${afterLikes}`);
+    console.log('✅ 4b. detect 重跑 — fanOut 全覆盖 → 不入队不写远端');
+  }
+
   // ── 5. 取消方向（liked=false）不触发匹配 ──────────────────────────
   {
     neteaseLikes.length = 0;
