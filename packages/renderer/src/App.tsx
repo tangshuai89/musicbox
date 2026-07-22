@@ -63,6 +63,10 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wps.wpsReady]);
+
+  // WPS → progress bar：把 SDK 上报的播放位置 / 时长喂回 usePlayer，让
+  // ProgressBar / 时间轴与其它平台一致。
+  const applyWpsProgress = player.applyWpsProgress;
   useEffect(() => {
     if (wps.wpsReady && wps.state.hasTrack) {
       applyWpsProgress(wps.state.positionMs, wps.state.track?.durationMs ?? 0);
