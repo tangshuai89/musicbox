@@ -146,6 +146,18 @@ export default function App() {
     });
   }, [player.playing, player.track?.title, player.track?.artist]);
 
+  // audio 元素 src 变时强制 load() 一次 —— 解决暂停+长时间不碰后
+  // 「歌换了但播不了」的场景：Chromium 在 MEDIA_ERR_NETWORK / aborted 状态
+  // 下，src 属性更新不会自动 reload；下次 audio.play() 也卡在 readyState=0
+  // （usePlayer 的 useEffect 看到 readyState<3 会跳过 play）。
+  // 显式 audio.load() 强制清 error 状态、让新 src 真去 fetch。
+  useEffect(() => {
+    const audio = audioRef.current;
+    const url = player.track?.audioUrl;
+    if (!audio || !url) return;
+    audio.load();
+  }, [player.track?.audioUrl]);
+
   if (!player.provider) {
     return <SourceSelect onSelect={player.selectSource} />;
   }

@@ -177,6 +177,12 @@ export function usePlayer(
   const currentUnifiedRef = useRef<UnifiedSearchItem | undefined>(undefined);
   const triedPlatformsRef = useRef<Set<MusicProvider>>(new Set());
   const trackRef = useRef<Track | null>(null);
+  // audio 元素当前 src 的镜像：onError 的"同源重试 1 次"延迟 800ms 后用这个判
+  // 用户这期间切歌没；切了就不该重试旧 src，应直接 fallback / 报错。
+  const currentSrcRef = useRef<string>('');
+  // onError 重试同源 1 次的 guard flag：避免同一波错误反复触发而不停重试。
+  // 切歌时（presentTrack）重置。
+  const retryAttemptedRef = useRef(false);
   trackRef.current = track;
   // 本首歌是否已经问过服务端要跨平台等价源（每首歌只问一次，避免死循环）。
   // 用于「unified item 只有 netease 一个 source、netease 又挂了」时向服务端
@@ -310,6 +316,13 @@ export function usePlayer(
         );
       }
       setTrack({ ...next, audioUrl });
+      // audioUrl 是最终落到 <audio src={...}> 的 URL（含 API_ORIGIN 前缀、
+      // QQ/网易云追加 ?q=、Spotify WPS 清空）。用它镜给 currentSrcRef，
+      // onError 的"800ms 同源重试"判用户期间是否切歌时用。
+      currentSrcRef.current = audioUrl ?? '';
+      // 同源重试的 guard 在每次 presentTrack 重置——跨平台 fallback 算新 URL,
+      // 给 1 次重试机会。
+      retryAttemptedRef.current = false;
       setCurrentTime(0);
       const audio = audioRef.current;
       if (audio) audio.dataset.wantPlay = '1';
@@ -727,9 +740,47 @@ export function usePlayer(
       const err = audio.error;
       const code = err ? `code=${err.code}` : 'no-MediaError';
       console.error('[audio] error', code, audio.src);
-      // 无版权 / 取流失败：先自动降级到同一首歌的其它平台源（含向服务端实时
-      // 匹配），全都失败才把报错弹给用户。tryFallbackSource 是异步的（可能要
-      // 问服务端），拿到 false 才报错。
+      // 防御性"同源重试一次": CDN / Tailscale 代理瞬间抖动 / 上游 keep-alive
+      // 超时引起的 transient MEDIA_ERR_NETWORK 不该立刻换源——换源会丢播放进度、
+      // 红心、queue 位置。等 800ms 让上游 stream 重新 fetch，再 audio.load() +
+      // audio.play() 重试；还错才进跨平台 fallback。
+      //
+      // 同一时间只允许一个重试 in-flight，避免 onError 反复触发时不停重试。
+      if (!retryAttemptedRef.current && audio.dataset.wantPlay === '1') {
+        retryAttemptedRef.current = true;
+        setTimeout(() => {
+          const stillOnTrack =
+            audio.dataset.wantPlay === '1' &&
+            audio.src === currentSrcRef.current;
+          if (!stillOnTrack) {
+            // 用户这期间切歌 / 暂停了 → 不重试，进 fallback
+            retryAttemptedRef.current = false;
+            void tryFallbackSource().then((ok) => {
+              if (!ok) setError(`音频加载失败（${code}），请尝试切歌`);
+            });
+            return;
+          }
+          console.warn('[audio] transient — 重试同源 1 次');
+          audio.load();
+          void audio.play().then(
+            () => {
+              // 重试成功。重置 guard，给下次错误机会（也可能是切歌后新源的错）。
+              retryAttemptedRef.current = false;
+            },
+            () => {
+              // 重试失败。重置 guard **并** 进 fallback——避免无限重试循环。
+              retryAttemptedRef.current = false;
+              void tryFallbackSource().then((ok) => {
+                if (!ok) setError(`音频加载失败（${code}），请尝试切歌`);
+              });
+            },
+          );
+        }, 800);
+        return;
+      }
+
+      // 无版权 / 真没源：先自动降级到同一首歌的其它平台源（含向服务端实时
+      // 匹配），全都失败才把报错弹给用户。
       void tryFallbackSource().then((ok) => {
         if (!ok) setError(`音频加载失败（${code}），请尝试切歌`);
       });
