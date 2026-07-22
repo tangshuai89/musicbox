@@ -220,24 +220,35 @@ export function createWpsWrapper(): WpsWrapper {
       }
       player = null;
     }
-    const p = new Spotify.Player({
-      name: deviceName,
-      getOAuthToken: (cb) => {
-        // SDK 会在 WebSocket 续连时回调；此时调我们的 token getter。
-        if (getToken) {
-          void getToken().then((t) => (t ? cb(t) : cb(token)));
-        } else {
-          cb(token);
-        }
-      },
-      volume: 0.8,
-    });
-    bindListeners(p);
-    const ok = await p.connect();
-    if (!ok) {
-      throw new Error('spotify-wps: connect() 返 false');
+    try {
+      console.log('[spotify-wps] creating Player, secureContext=', window.isSecureContext);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p: any = new Spotify.Player({
+        name: deviceName,
+        getOAuthToken: (cb: (t: string) => void) => {
+          if (getToken) {
+            void getToken().then((t) => (t ? cb(t) : cb(token)));
+          } else {
+            cb(token);
+          }
+        },
+        volume: 0.8,
+      });
+      bindListeners(p);
+      // 在 connect 前先声明 error 监听
+      p.on('initialization_error', onError('initialization_error'));
+      p.on('account_error', onError('account_error'));
+      const ok = await p.connect();
+      if (!ok) {
+        throw new Error('spotify-wps: connect() 返 false');
+      }
+      player = p;
+    } catch (err) {
+      console.error('[spotify-wps] creating Player or connect failed:', err);
+      // 补信息：帮排查是 SDK 构造还是 connect() 里报的
+      console.error('[spotify-wps] secureContext=', window.isSecureContext);
+      throw err;
     }
-    player = p;
   }
 
   function disconnect(): void {
