@@ -13,6 +13,9 @@ const assert = require('node:assert');
 const {
   normalizeKey,
   stripFeatTags,
+  stripFuriganaParens,
+  cjkUnify,
+  CJK_UNIFIER,
   dedupTracks,
   buildUnifiedItems,
   PLAY_PRIORITY,
@@ -206,6 +209,96 @@ function makeTrack(
     'artist 里的 feat. 也剥');
   console.log('✅ 3i. 阶段 D: normalizeKey 跨写法归一 4 case 通过');
 }
+
+// ── 3j. 阶段 E1: stripFuriganaParens 单独测 ──────────────────
+{
+  // 纯假名括号 — 剥（最终 trim 过，尾空格已清）
+  assert.strictEqual(stripFuriganaParens('藤井风 (ふじいかぜ)'), '藤井风',
+    '半角括号平假名 (用户场景)');
+  assert.strictEqual(stripFuriganaParens('Adele [エイドル]'), 'Adele',
+    '半角方括号片假名');
+  assert.strictEqual(stripFuriganaParens('Taylor (エーミリー・スミス)'),
+    'Taylor', '片假名中点');
+  // 全角括号
+  assert.strictEqual(stripFuriganaParens('藤井風（ふじいかぜ）'), '藤井風',
+    '全角括号平假名');
+  // 中文方括号
+  assert.strictEqual(stripFuriganaParens('歌手【えいみー】'), '歌手',
+    '日式方括号');
+  // 假名 + 数字 / Latin → 不剥
+  assert.strictEqual(stripFuriganaParens('Song (ライブ Ver.)'),
+    'Song (ライブ Ver.)',
+    '含 Latin "Ver." 不剥');
+  // 全 Latin → 不剥（live version）
+  assert.strictEqual(stripFuriganaParens('Song (Live 2024)'), 'Song (Live 2024)',
+    'Latin 标签不剥');
+  // feat 路径 — stripFuriganaParens 不知道 feat（feat 全 Latin → 不动）
+  assert.strictEqual(stripFuriganaParens('Song (feat. X)'), 'Song (feat. X)',
+    'feat. 纯 Latin → 不动 —— stripFeatTags 会单独处理');
+  // 混合假名 + 汉字
+  assert.strictEqual(stripFuriganaParens('藤井风(ふじい風)'), '藤井风(ふじい風)',
+    '含汉字 \"風\" 不剥');
+  // 空括号
+  assert.strictEqual(stripFuriganaParens('Song ()'), 'Song', '空括号');
+  // 无括号不动
+  assert.strictEqual(stripFuriganaParens('Song'), 'Song', '无括号不动');
+  console.log('✅ 3j. 阶段 E1: stripFuriganaParens 11 case 全过');
+}
+
+// ── 3k. 阶段 E1: normalizeKey 集成 — furigana 不再污染 key ────
+{
+  // 用户场景: seed vs cand 剥掉后更接近
+  const seed = normalizeKey('何なんw', '藤井风 (ふじい かぜ)');
+  const candWithFurigana = normalizeKey('何なんw', '藤井风 (フジー)');
+  // 两边都剥了；剩 "何なんw + 藤井风"——期望同 key
+  assert.strictEqual(seed, candWithFurigana,
+    'artist 里纯假名括号 → 两侧都剥 → 同 key');
+  console.log(`✅ 3k. 阶段 E1: 用户场景 — artist furigana 剥除后命中 (key=${seed})`);
+}
+
+// ── 3l. 阶段 E2: cjkUnify 单独测 ─────────────────────────
+{
+  // 单字配对 → 单方向向中简靠
+  assert.strictEqual(cjkUnify('風'), '风', '風→风');
+  assert.strictEqual(cjkUnify('学'), '学', '学 不动 (中简本身就是 canonical)');
+  assert.strictEqual(cjkUnify('國'), '国', '國→国');
+  assert.strictEqual(cjkUnify('氣'), '气', '氣→气');
+  assert.strictEqual(cjkUnify('黒'), '黑', '黒→黑');
+  assert.strictEqual(cjkUnify('轉'), '转', '轉→转');
+  assert.strictEqual(cjkUnify('龍'), '龙', '龍→龙');
+  assert.strictEqual(cjkUnify('體'), '体', '體→体');
+  assert.strictEqual(cjkUnify('畫'), '画', '畫→画');
+  assert.strictEqual(cjkUnify('時'), '时', '時→时');
+  assert.strictEqual(cjkUnify('個'), '个', '個→个');
+  assert.strictEqual(cjkUnify('會'), '会', '會→会');
+  // 表里没的字不动
+  assert.strictEqual(cjkUnify('藤'), '藤', '藤 不动');
+  assert.strictEqual(cjkUnify('井'), '井', '井 不动');
+  // 多字混合
+  assert.strictEqual(cjkUnify('藤井風'), '藤井风', '多字混合');
+  assert.strictEqual(cjkUnify('何なんw'), '何なんw', '非 CJK 不动');
+  assert.strictEqual(cjkUnify('藤井風 (フジー)'), '藤井风 (フジー)',
+    '只 unify CJK，kana 不动');
+  console.log('✅ 3l. 阶段 E2: cjkUnify 16 case 全过');
+}
+
+// ── 3m. 阶段 E2: normalizeKey 集成 — CJK 跨语言形态合并 ─────
+{
+  // 用户场景核心: 日文繁体「風」 vs 中文简体「风」 → 同 key
+  const jp = normalizeKey('何なんw', '藤井風');
+  const cn = normalizeKey('何なんw', '藤井风');
+  assert.strictEqual(jp, cn,
+    '日文繁体的「風」与中文简体的「风」归一到同 key');
+  console.log(`✅ 3m. 阶段 E2: 跨语言形态 — 風 / 风 同 key (${jp})`);
+
+  // 多个 CJK pair 在同一 key
+  const ja_track = normalizeKey('時間', '個體');
+  const cn_track = normalizeKey('时间', '个体');
+  assert.strictEqual(ja_track, cn_track,
+    '時間 / 时间、个體 / 个体 都对成一组');
+  console.log(`✅ 3m. 阶段 E2: 多 pair 合并（時間/时间 + 个體/个体）`);
+}
+
 
 // ── 4. 不同歌 → 各自保留 ─────────────────────────────────────
 {

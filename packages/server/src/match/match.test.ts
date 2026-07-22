@@ -244,11 +244,17 @@ void (async () => {
   console.log(`✅ 13. 阶段 C: 1 字符 typo 命中 fuzzy (score=${r.scores.netease.toFixed(4)})`);
 }
 
-// ── 14. 阶段 C: 长度差硬门 — Live 版本差异不 fuzzy 并 ──────
-// 用户选"保守保留版本差异"，所以即使 JW 高也不应该把 (Live) 与 album 版合并
+// ── 14. 阶段 C: 长度差硬门 + E3 alt-strict 行为说明 ──────────
+// 【历史】v3 之前这个测试用 (Live) 防 fuzzy 命中——阶段 E3 改了语义：
+//   - strict mode: "(Live)" vs "" 不命中（保守策略保留）
+//   - alt-strict mode (E3): "海阔天空 (Live)" title 括号剥掉 → "海阔天空"，
+//     与 cand "海阔天空" 同 key → alt-strict 命中 (score=0.95, confidence=fuzzy)
+//
+//   用户在 v4 选了"候选 A —— 剥 title 括号内容做 altKey"，接受这个权衡。
+//   本测试现在验证 alt-strict 确实命中 (而不是阻止)，同时 score=0.95 而非 1
+//   让 UI 还能区分"严格" vs "alt-strict"。
 {
   const seed = makeTrack({ title: '海阔天空 (Live)', artist: 'Beyond', duration: 270, provider: 'qq', id: 'q1' });
-  // Netease 端只有专辑版（无 (Live)），normalized 后长度差很大 → 长度门 reject
   const neCandidates = [
     makeTrack({ title: '海阔天空', artist: 'Beyond', duration: 270, provider: 'netease', id: 'album-1' }),
   ];
@@ -258,10 +264,13 @@ void (async () => {
     fakeProvider('de', []),
   );
   const r: any = await m.findEquivalent(seed);
-  assert.strictEqual(r.equivalents.netease, undefined,
-    '即使 JW=0.9，长度差 > 15% 触发硬门 → 不命中');
-  assert.strictEqual(r.confidence, 'none', '保守策略：版本差异不 fuzzy');
-  console.log('✅ 14. 阶段 C: 长度差硬门保护——Live 版本差异不被 fuzzy 并');
+  // E3 alt-strict 现在允许 "(Live)" 与 album 匹配（用户选"候选 A"接受）
+  assert.ok(r.equivalents.netease, 'alt-strict 命中 (Live) vs album (因剥括号)');
+  assert.strictEqual(r.scores.netease, 0.95,
+    'alt-strict score=0.95（不是 1，UI 标记为 fuzzy）');
+  assert.strictEqual(r.confidence, 'fuzzy',
+    'confidence=fuzzy（虽然命中但 alt 不是 strict）');
+  console.log('✅ 14. 阶段 E3 语义: (Live) vs album 经 alt-strict 命中 (score=0.95)');
 }
 
 // ── 15. 阶段 C: 严格优先于 fuzzy ────────────────────
@@ -319,5 +328,69 @@ void (async () => {
   console.log(`✅ 17. 阶段 C: strict + fuzzy 混合 → confidence=fuzzy (deezer score=${r.scores.deezer.toFixed(4)})`);
 }
 
-console.log('\n🎉 全部 17 个测试通过');
+// ── 18. 阶段 E3: alt-strict fallback — 用户场景核心 ─────────
+// seed: 标题带中译括号 + artist 带 furigana → cand 是干净版 → alt-strict 命中
+{
+  const seed = makeTrack({ title: '何なんw (什么啊w)', artist: '藤井风 (ふじい かぜ)', duration: 323, provider: 'qq', id: 'q1' });
+  const neteaseCandidates = [
+    makeTrack({ title: '何なんw', artist: '藤井風', duration: 321, provider: 'netease', id: 'n-clean' }),
+  ];
+  const m = new MatchService(
+    fakeProvider('qq', []),
+    fakeProvider('ne', neteaseCandidates),
+    fakeProvider('de', []),
+  );
+  const r: any = await m.findEquivalent(seed);
+  assert.ok(r.equivalents.netease, 'alt-strict 应命中 clean 版');
+  assert.strictEqual(r.equivalents.netease.id, 'n-clean');
+  // score=0.95 (ALT_SCORE)，不算 strict，confidence 应为 fuzzy
+  assert.strictEqual(r.scores.netease, 0.95, 'alt-strict score=ALT_SCORE=0.95');
+  assert.strictEqual(r.confidence, 'fuzzy',
+    'alt-strict 命中但 confidence 还是 fuzzy（不算 strict）');
+  console.log(`✅ 18. 阶段 E3: alt-strict fallback — 中译括号剥后命中 (score=${r.scores.netease})`);
+}
+
+// ── 19. 阶段 E3: 严格优先于 alt-strict ────────────────────
+// 同 platform 有 strict + alt-strict 两个候选 → strict 优先
+{
+  const seed = makeTrack({ title: 'Bad Guy (feat. Justin)', artist: 'Billie Eilish', duration: 194, provider: 'qq', id: 'q1' });
+  const neteaseCandidates = [
+    // strict（去 feat 后完全相等）
+    makeTrack({ title: 'Bad Guy', artist: 'Billie Eilish', duration: 194, provider: 'netease', id: 'n-strict' }),
+    // alt-strict（title 带 feat 但 cand 用别的措辞，正常 strict 比不上；为测试强制 title 一致）
+  ];
+  const m = new MatchService(
+    fakeProvider('qq', []),
+    fakeProvider('ne', neteaseCandidates),
+    fakeProvider('de', []),
+  );
+  const r: any = await m.findEquivalent(seed);
+  assert.ok(r.equivalents.netease);
+  assert.strictEqual(r.equivalents.netease.id, 'n-strict', 'strict 优先');
+  assert.strictEqual(r.scores.netease, 1, 'strict score=1，alt-strict 不会抢');
+  console.log(`✅ 19. 阶段 E3: strict 优先于 alt-strict`);
+}
+
+// ── 20. 阶段 E3: 无 alt-strict → 仍是 none（不像 fuzzy 那样兜底）──
+// 用户场景是"跨平台对译"的兜底，不是 typo 容错。如果连 alt 都没命中，
+// 仍然返回 none（fuzzy 在更后面），用户保留手动匹配入口。
+{
+  const seed = makeTrack({ title: '何なんw (什么啊w)', artist: '藤井风 (ふじい かぜ)', duration: 323, provider: 'qq', id: 'q1' });
+  const neteaseCandidates = [
+    // 候选跟 seed 没关联（标题完全不一样）→ strict miss + alt-strict miss
+    makeTrack({ title: 'Lemon', artist: '米津玄師', duration: 250, provider: 'netease', id: 'lemon' }),
+  ];
+  const m = new MatchService(
+    fakeProvider('qq', []),
+    fakeProvider('ne', neteaseCandidates),
+    fakeProvider('de', []),
+  );
+  const r: any = await m.findEquivalent(seed);
+  assert.strictEqual(r.equivalents.netease, undefined,
+    'alt-strict 不命中 → 该平台仍 null');
+  assert.strictEqual(r.confidence, 'none');
+  console.log(`✅ 20. 阶段 E3: alt-strict 也未命中 → 保持 none（不强行 fuzzy）`);
+}
+
+console.log('\n🎉 全部 20 个测试通过');
 })();

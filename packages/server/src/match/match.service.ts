@@ -38,14 +38,14 @@ const SEARCH_TIMEOUT_MS = 5_000;
 /** 单次 search 拉多少条候选（多查询变体后，按平台聚合后通常 ≤ N * V）。 */
 const TOP_N_PER_SEARCH = 5;
 /**
- * Fuzzy 兜底（阶段 C）的 JW 阈值。≥ 0.88 才视为命中。
+ * Fuzzy 兑底（阶段 C）的 JW 阈值。≥ 0.88 才视为命中。
  * 取 0.88 是经验值：1-2 字符错字大约 0.92-0.97；2-3 字差异约 0.85。
  *
  * 不要轻易下调——会和用户选的"保守保留版本差异"政策冲突。
  */
 const FUZZY_THRESHOLD = 0.88;
 /**
- * Fuzzy 兜底的长度差硬门。
+ * Fuzzy 兑底的长度差硬门。
  * |candLen - seedLen| / max(candLen, seedLen) > 此值 → 视为不同版本/不同歌曲
  * 直接跳过 fuzzy。
  *
@@ -57,6 +57,15 @@ const FUZZY_THRESHOLD = 0.88;
  * 来 4-6 字符差异（10-30%），刚好落在门外。
  */
 const FUZZY_LENGTH_RATIO_GATE = 0.15;
+/**
+ * 阶段 E3 alt-strict 命中的分数。**固定**远高于 FUZZY_THRESHOLD 但 < 1，
+ * 让 UI / 后续逻辑能区分"完全严格相等"和"剥括号后相等"。
+ *
+ * 在 confidence 里不算 strict（仍判 fuzzy），是为了让 UI 看到模糊提示：
+ * 人工确认 "晴天 (Live)" 在 alt 路径下与 "晴天" 同 key 是有意为之，
+ * 不是 auto-merge；手点 爱奇艺 可逆。
+ */
+const ALT_SCORE = 0.95;
 
 /**
  * 阶段 B 的额外搜索变体数量：query 形态数量。
@@ -194,13 +203,35 @@ export class MatchService {
   }
 
   /**
+   * 阶段 E3：从标题括号里剥**所有**内容（不是只剥 furigana 那种纯假名
+   * 括号；这里剥"(X)"中间的 X 整段）。用于 alt-key fallback——当 strict 不命中
+   * 时，用"剥过的标题"再算一次 strict，给翻译性括号一个出口。
+   *
+   * 不动正中""及单边 "" 这些引号"标题缩略 / 翻译"以外的括号。
+   * 不去判断里面是"译注"还是"Live"——那是 fuzzy 留给 UI 评估。
+   *
+   * 阶段 E3F：返回"剥后标题"的归一 key，整个过程包括跑 normalizeKey
+   * 全部流水线（E1 furigana 剥、Phase A glyph、Phase D feat、Phase E2 CJK 合一）。
+   */
+  private stripAllParenContent(s: string): string {
+    if (!s) return s;
+    return s
+      // 半角括号
+      .replace(/[(\[][^\])]*[\])]/g, '')
+      // 全角 / 中式 / 日式括号
+      .replace(/[（【〔《〈【［][^）】〕》〉】］]*[）】〕》〉】］]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  /**
    * 从候选中挑最合适的，按优先级：
    *   1. duration gate：与 seed.duration 差 ≤ ±3s（或任一侧 ≤ 0 视作通过）
    *   2. strict normalizeKey 相等 → 取首条命中（score=1）
-   *   3. （阶段 C）fuzzy 兜底：在 duration 内候选里，按 Jaro-Winkler 算
-   *      normalized key 相似度，取 ≥ FUZZY_THRESHOLD 且分数最高的那条。
-   *      但**先过长度差硬门** — Live/Remix 版本标签一般带来 4-6 字符差异，
-   *      长度门（±15%）会把它们剔出 fuzzy 候选。
+   *   3. （阶段 E3）alt-strict fallback：剥掉 title 里的所有括号内容再算
+   *      normalizeKey，对齐跨平台"标题里有中/日 / EN 译注"的 case。
+   *      score=0.95 → confidence 仍判 fuzzy（让 UI badge 显示）
+   *   4. （阶段 C）fuzzy 兜底：Jaro-Winkler + 长度差硬门
    *
    * 返回 null = 该平台没找到。
    */
@@ -218,7 +249,19 @@ export class MatchService {
     );
     if (strict) return { track: strict, score: 1 };
 
-    // Tier 2: fuzzy 兜底（阶段 C）
+    // Tier 2: alt-strict fallback（阶段 E3）—— 剥 title 括号内容后的 strict
+    const strippedTitle = this.stripAllParenContent(seed.title);
+    if (strippedTitle && strippedTitle !== seed.title) {
+      const altSeedKey = normalizeKey(strippedTitle, seed.artist);
+      if (altSeedKey && altSeedKey !== seedKey) {
+        const altStrict = inDuration.find(
+          (c) => normalizeKey(c.title, c.artist) === altSeedKey,
+        );
+        if (altStrict) return { track: altStrict, score: ALT_SCORE };
+      }
+    }
+
+    // Tier 3: fuzzy 兜底（阶段 C）
     let best: { track: Track; score: number } | null = null;
     for (const c of inDuration) {
       const candKey = normalizeKey(c.title, c.artist);
