@@ -43,6 +43,8 @@ export interface WpsWrapper {
   readonly ready: boolean;
   /** EME / Widevine CDM 初始化是否成功（无 initialization_error）。 */
   readonly emeOk: boolean;
+  /** SDK 是否没有致命错误（authentication_error / initialization_error 等）。 */
+  readonly wpsFatal: boolean;
   /** 注册一个状态变更订阅。返回 unsubscribe。 */
   onStateChange(cb: WpsStateCallback): () => void;
   /** 用新 token 重新连接（refresh 轮换时）。会断开旧 player 再建。 */
@@ -145,8 +147,9 @@ function makeDeviceName(): string {
 export function createWpsWrapper(): WpsWrapper {
   let player: SpotifyPlayer | null = null;
   let getToken: (() => Promise<string | null>) | null = null;
-  // EME / Widevine 初始化状态：initialization_error 事件被 fire 则置 true
-  let emeFailed = false;
+  // WPS 致命错误：initialization_error / authentication_error / account_error
+  // 任意一个 fire 则无法播放，useSpotifyWpsPlayer 据此退到 30s 预览
+  let wpsFatal = false;
   // 设备名在 wrapper 生命周期内固定：token 续期重连时复用同一名字，
   // Spotify Connect 才会把推流继续路由到同一设备（否则每次重连都冒出一个
   // 新设备、播放会断）。
@@ -218,11 +221,20 @@ export function createWpsWrapper(): WpsWrapper {
     on('player_state_changed', onPlayerStateChanged);
     on('ready', onReady);
     on('not_ready', onNotReady);
-    on('authentication_error', onError('authentication_error'));
-    on('playback_error', onError('playback_error'));
+    on('authentication_error', (e: unknown) => {
+      wpsFatal = true;
+      console.warn('[spotify-wps] authentication_error:', e);
+    });
+    on('playback_error', (e: unknown) => {
+      console.warn('[spotify-wps] playback_error:', e);
+    });
     on('initialization_error', (e: unknown) => {
-      emeFailed = true;
+      wpsFatal = true;
       console.warn('[spotify-wps] initialization_error:', e);
+    });
+    on('account_error', (e: unknown) => {
+      wpsFatal = true;
+      console.warn('[spotify-wps] account_error:', e);
     });
   }
 
@@ -348,7 +360,7 @@ export function createWpsWrapper(): WpsWrapper {
       return Boolean(player);
     },
     get emeOk() {
-      return !emeFailed && Boolean(player);
+      return !wpsFatal && Boolean(player);
     },
     onStateChange,
     connect,
