@@ -159,10 +159,17 @@ export function useAuth(
     try {
       const status = await getSpotifyStatus();
       if (!status.hasClientId) {
-        const id = window.prompt(
-          '需要先在 Spotify Developer 后台创建应用，拿到 client_id 后粘到这里：\n' +
-            '（https://developer.spotify.com/dashboard → Create app）',
-        );
+        // prompt() 在 Electron 上不被支持（manifest v3 封了）。fallback: 提示用户去 .env 设。
+        let id: string | null = null;
+        try {
+          id = window.prompt(
+            '需要先在 Spotify Developer 后台创建应用，拿到 client_id 后粘到这里：\n' +
+              '（https://developer.spotify.com/dashboard → Create app）',
+          );
+        } catch {
+          setError('未配置 Spotify client_id。请在 .env 中设置 SPOTIFY_CLIENT_ID=');
+          return;
+        }
         if (!id || !id.trim()) {
           setError('已取消：未填 Spotify client_id');
           return;

@@ -225,6 +225,7 @@ export class AuthController {
   ) {
     const session = this.sessionService.resolve(req, res);
     const stored = this.storage.get<{ clientId?: string }>(SPOTIFY_CLIENT_ID_KEY);
+    const clientId = stored?.clientId ?? process.env.SPOTIFY_CLIENT_ID;
     const loggedIn = this.spotify.isConfigured(session.providers.spotify);
     // tier 只在已登录时有意义；未登录直接 null（前端据此隐藏 WPS 相关 UI）。
     let tier: string | null = null;
@@ -233,7 +234,7 @@ export class AuthController {
       tier = me?.tier ?? null;
     }
     return {
-      hasClientId: Boolean(stored?.clientId),
+      hasClientId: Boolean(clientId),
       loggedIn,
       tier,
     };
