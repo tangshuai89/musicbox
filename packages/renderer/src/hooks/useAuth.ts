@@ -7,6 +7,7 @@ import {
   loginNeteaseCookie,
   setSpotifyClientId,
   startSpotify,
+  redeemSpotifyCode,
 } from '../api';
 import type { AuthStatus, AuthUser, MusicProvider } from '../api';
 
@@ -159,7 +160,6 @@ export function useAuth(
     try {
       const status = await getSpotifyStatus();
       if (!status.hasClientId) {
-        // prompt() 在 Electron 上不被支持（manifest v3 封了）。fallback: 提示用户去 .env 设。
         let id: string | null = null;
         try {
           id = window.prompt(
@@ -176,25 +176,42 @@ export function useAuth(
         }
         await setSpotifyClientId(id.trim());
       }
+      // Electron: maestro:// 协议 — 打开系统浏览器授权，OS 调回 app 后 main process
+      // IPC 发 code+state 给 renderer，renderer 调 redeem 端点拿 cookie。
+      if (isElectron && window.electronAPI?.openExternal) {
+        const { authorizeUrl } = await startSpotify('maestro://spotify-callback');
+        await window.electronAPI.openExternal(authorizeUrl);
+        // 等 main process 的 spotify:oauth-protocol IPC
+        const result = await new Promise<{ code: string; state: string }>(
+          (resolve) => {
+            const handler = (_event: unknown, data: { code: string; state: string }) => {
+              window.electronAPI!.removeListener('spotify:oauth-protocol', handler);
+              resolve(data);
+            };
+            window.electronAPI!.on('spotify:oauth-protocol', handler);
+          },
+        );
+        const redeemed = await redeemSpotifyCode(result.code, result.state);
+        if (redeemed.ok) {
+          setAuth({
+            provider: 'spotify',
+            loggedIn: true,
+            user: redeemed.profile,
+            tier: status.tier,
+          });
+          loadNextTrack();
+        } else {
+          setError('Spotify 登录失败：redeem 失败');
+        }
+        return;
+      }
+      // 浏览器模式：window.open popup + polling cookie
       const { authorizeUrl } = await startSpotify();
-      console.log('[spotify] start URL:', authorizeUrl);
-      // 用 window.open 而不是 Electron shell.openExternal——后者把授权页踢到系统
-      // 浏览器（Safari）；回调的 session cookie 写在系统浏览器里，Electron 自己的
-      // renderer 永远读不到，轮询 getSpotifyStatus 永远不会 loggedIn=true。
-      // nativeWindowOpen:true 主窗口的效果：window.open 在 Electron 内创子窗口，
-      // session cookie 共享，主窗口轮询能拿到 login 状态。配套 main.ts 里的
-      // setWindowOpenHandler 把 127.0.0.1:5173/auth/spotify/* 走 action: 'allow'。
-      const popup = window.open(authorizeUrl, '_blank', 'noopener');
-      console.log('[spotify] popup opened:', !!popup);
-      // 轮询 status；Spotify 跳回 callback 后后端会入 session，
-      // 下一次轮询就会看到 loggedIn=true。
+      window.open(authorizeUrl, '_blank', 'noopener');
       const deadline = Date.now() + 90_000;
-      let iter = 0;
       while (Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 1500));
-        iter++;
         const s = await getSpotifyStatus();
-        console.log(`[spotify] poll #${iter}:`, s);
         if (s.loggedIn) {
           const full = await getAuthStatus('spotify');
           setAuth({

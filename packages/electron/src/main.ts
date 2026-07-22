@@ -666,6 +666,33 @@ ipcMain.on('player:state', (_event, state: PlaybackState) => {
 
 // ── App lifecycle ───────────────────────────────────────────────────────────
 
+// Spotify OAuth：注册 maestro:// 自定义协议，回调时 macOS / Windows 调起 app
+if (process.defaultApp) {
+  if (process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient('maestro', process.execPath, [
+      path.resolve(process.argv[1]),
+    ]);
+  }
+} else {
+  app.setAsDefaultProtocolClient('maestro');
+}
+
+// 协议 URL 回调：OS 把 maestro://spotify-callback?code=...&state=... 递进来
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  console.log('[main] open-url:', url);
+  try {
+    const parsed = new URL(url);
+    const code = parsed.searchParams.get('code');
+    const state = parsed.searchParams.get('state');
+    if (code && state && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('spotify:oauth-protocol', { code, state });
+    }
+  } catch (err) {
+    console.error('[main] open-url parse failed:', err);
+  }
+});
+
 app.whenReady().then(async () => {
   // 1. 启动 sidecar（prod 模式才有），等它就绪
   try {

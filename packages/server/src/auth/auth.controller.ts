@@ -354,4 +354,36 @@ export class AuthController {
       </p>
     </body></html>`);
   }
+
+  /**
+   * 协议回调兑换：Electron 自定义协议 maestro:// 把 code + state 发回 main
+   * process → main process IPC 给 renderer → renderer 调此端点换 token。
+   * 与 GET callback 不同：这里的 session cookie 会直接写进 renderer 的
+   * cookie jar（renderer 发的请求带自己的 cookie 域）。不需要 popup 或 cookie 共享。
+   */
+  @Get('spotify/redeem')
+  async spotifyRedeem(
+    @Query('code') code: string,
+    @Query('state') state: string,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    if (!code || !state) {
+      throw new BadRequestException('code + state 必填');
+    }
+    const session = this.sessionService.resolve(req, res);
+    const redirectUri = 'maestro://spotify-callback';
+    const result = await this.spotify.exchangeCode(
+      session.providers.spotify ?? {},
+      code,
+      state,
+      redirectUri,
+    );
+    this.sessionService.setProvider(session, 'spotify', {
+      ...session.providers.spotify,
+      spotify: result.token,
+      nickname: result.profile.displayName,
+    });
+    return { ok: true, profile: result.profile };
+  }
 }
