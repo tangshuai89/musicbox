@@ -232,6 +232,10 @@ function createWindow(): void {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js'),
+      // Spotify OAuth PKCE：renderer 里 window.open(authorizeUrl) 需要在
+      // Electron 内创建子 BrowserWindow 而不是跳系统浏览器——这样才能共享
+      // session cookie storage，使 login 完成后的 cookie 在主窗口 poll 时可见。
+      nativeWindowOpen: true,
     },
   });
 

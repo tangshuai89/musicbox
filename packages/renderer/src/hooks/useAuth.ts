@@ -177,12 +177,12 @@ export function useAuth(
         await setSpotifyClientId(id.trim());
       }
       const { authorizeUrl } = await startSpotify();
-      if (isElectron && window.electronAPI?.openExternal) {
-        await window.electronAPI.openExternal(authorizeUrl);
-      } else {
-        // 浏览器调试模式：直接新窗口打开
-        window.open(authorizeUrl, '_blank', 'noopener');
-      }
+      // 用 window.open 而不是 Electron shell.openExternal——后者把授权页踢到系统
+      // 浏览器（Safari）；回调的 session cookie 写在系统浏览器里，Electron 自己的
+      // renderer 永远读不到，轮询 getSpotifyStatus 永远不会 loggedIn=true。
+      // nativeWindowOpen:true 主窗口的效果：window.open 在 Electron 内创子窗口，
+      // session cookie 共享，主窗口轮询能拿到 login 状态。
+      window.open(authorizeUrl, '_blank', 'noopener');
       // 轮询 status；Spotify 跳回 callback 后后端会入 session，
       // 下一次轮询就会看到 loggedIn=true。
       const deadline = Date.now() + 90_000;

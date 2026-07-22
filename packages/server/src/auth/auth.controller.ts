@@ -344,6 +344,14 @@ export class AuthController {
       spotify: result.token,
       nickname: result.profile.displayName,
     });
-    return { ok: true, profile: result.profile };
+    // 返一个自关闭 HTML 页——回调是在 Electron 的 window.open 子窗口里打开的，
+    // session cookie 已在这条 response header 里写回。子窗口关掉即可，主窗口
+    // 的 polling 下次就能读到 loggedIn=true。
+    res.type('html').send(`<!doctype html><html><body>
+      <script>window.close()</script>
+      <p style='font-family:system-ui;text-align:center;padding-top:40px;color:#1db954'>
+        Spotify 登录成功 ✓<br><small>即将关闭此窗口…</small>
+      </p>
+    </body></html>`);
   }
 }
