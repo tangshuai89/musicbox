@@ -200,7 +200,8 @@ export function createWpsWrapper(): WpsWrapper {
       // 即可（由 useSpotifyWpsPlayer 拿到 deviceId 后经 transferHere() 完成）。
       const info = payload as { device_id?: string };
       if (info?.device_id) {
-        (player as unknown as { _deviceId?: string })._deviceId = info.device_id;
+        // 注意：不能用闭包的 player——那可能在 connect() 内先于 player = p 被 fire
+        (p as unknown as { _deviceId?: string })._deviceId = info.device_id;
       }
     };
     const onNotReady = (): void => {
