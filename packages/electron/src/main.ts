@@ -682,7 +682,12 @@ app.on('open-url', (event, url) => {
   event.preventDefault();
   console.log('[main] open-url:', url);
   try {
-    const parsed = new URL(url);
+    // Spotify 回跳的 redirect_uri 常常带一个尾斜杠：
+    //   maestro://spotify-callback/?code=...   （有 /）
+    // 而 Dashboard 里注册的是  maestro://spotify-callback （无 /）
+    // → URL 解析不受影响（searchParams 不受路径影响），但 log 要精准
+    const normalized = url.replace(/\/\?/, '?');
+    const parsed = new URL(normalized);
     const code = parsed.searchParams.get('code');
     const state = parsed.searchParams.get('state');
     console.log('[main] parsed code:', code, 'state:', state);

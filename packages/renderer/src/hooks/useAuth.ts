@@ -179,7 +179,7 @@ export function useAuth(
       // Electron: maestro:// 协议 — 打开系统浏览器授权，OS 调回 app 后 main process
       // IPC 发 code+state 给 renderer，renderer 调 redeem 端点拿 cookie。
       if (isElectron && window.electronAPI?.openExternal) {
-        const { authorizeUrl } = await startSpotify('maestro://spotify-callback/');
+        const { authorizeUrl } = await startSpotify('maestro://spotify-callback');
         await window.electronAPI.openExternal(authorizeUrl);
         // 等 main process 的 spotify:oauth-protocol IPC
         const result = await new Promise<{ code: string; state: string }>(

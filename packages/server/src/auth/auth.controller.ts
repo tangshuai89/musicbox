@@ -372,7 +372,7 @@ export class AuthController {
       throw new BadRequestException('code + state 必填');
     }
     const session = this.sessionService.resolve(req, res);
-    const redirectUri = 'maestro://spotify-callback/';
+    const redirectUri = 'maestro://spotify-callback';
     console.log('[spotify redeem] sessionId=' + session.id + ' exchanging code...');
     const result = await this.spotify.exchangeCode(
       session.providers.spotify ?? {},
