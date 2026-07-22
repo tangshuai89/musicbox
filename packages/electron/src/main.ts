@@ -42,6 +42,10 @@ let sidecar: ChildProcess | null = null;
 /** Sidecar 端口，默认 3200；PORT env 可改。 */
 const SIDECAR_PORT = Number(process.env.PORT ?? 3200);
 
+/** Vite dev server 地址；OAuth 回调窗口白名单用。生产是 loadFile 模式无外链，
+ *  RENDERER_BASE 可不设。 */
+const RENDERER_BASE = process.env.RENDERER_BASE ?? 'http://127.0.0.1:5173';
+
 /** 等端口就绪（轮询 :3200/music/deezer/editorials 之类的轻量 endpoint）。 */
 async function waitForSidecar(port: number, timeoutMs = 30_000): Promise<void> {
   const start = Date.now();
@@ -275,8 +279,15 @@ function createWindow(): void {
     },
   );
 
-  // Open external links in the OS browser rather than a new Electron window.
+  // window.open handler: Spotify OAuth callback 走子 BrowserWindow（保持 session
+  // cookie 共享），其他外部链接（spotify.com 网页、社交链接...）走 OS 浏览器。
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    // OAuth 回调：127.0.0.1:5173/auth/spotify/callback 是我们自己的端点，留在
+    // Electron 内能拿到同 session 的 cookie。
+    if (url.startsWith(`${RENDERER_BASE}/auth/spotify/`)) {
+      return { action: 'allow' };
+    }
+    // 其他外部链接：丢到系统浏览器
     shell.openExternal(url);
     return { action: 'deny' };
   });
