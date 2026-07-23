@@ -54,6 +54,7 @@ export function useSpotifyWpsPlayer({ enabled }: Options): UseSpotifyWpsPlayer {
       wrapperRef.current?.disconnect();
       wrapperRef.current = null;
       setWpsReady(false);
+      console.log('[wps hook] disabled, wpsReady=false');
       return;
     }
 
@@ -77,8 +78,23 @@ export function useSpotifyWpsPlayer({ enabled }: Options): UseSpotifyWpsPlayer {
           if (!cancelled) setState(s);
         });
         await w.connect(tok.accessToken);
-        if (cancelled) {
-          w.disconnect();
+        if (cancelled) { w.disconnect(); return; }
+        // 不等 fixed timeout——SDK ready 事件先到才真 ready。
+        // 安全上限 15s；期间 emeOk 变为 false 或 ready 不 fire 则退出。
+        const ready = await new Promise<boolean>((resolve) => {
+          const deadline = Date.now() + 15_000;
+          const check = () => {
+            if (cancelled) return resolve(false);
+            if (w.emeOk && w.hasDeviceId) return resolve(true);
+            if (!w.emeOk) return resolve(false);
+            if (Date.now() > deadline) return resolve(false);
+            setTimeout(check, 200);
+          };
+          // 如果 ready 事件在 connect 里已经 fire 了，立即检查
+          check();
+        });
+        if (!ready) {
+          setWpsReady(false);
           return;
         }
         setWpsReady(true);
@@ -91,8 +107,11 @@ export function useSpotifyWpsPlayer({ enabled }: Options): UseSpotifyWpsPlayer {
             if (cancelled) return;
             const remaining = cur.expiresAt - Date.now();
             if (remaining < TOKEN_REFRESH_LEAD_MS) {
-              await w.connect(cur.accessToken);
-              setWpsReady(true);
+              // 仅刷新 token，不重建 connection —— 避免 disconnect→connect 之间
+              // 的播放秒停（v2 已知限制：$w.connect() 会断旧 player 再建新。
+              // 修复：不重连，只让 SDK 的 getOAuthToken 回调在下次 WebSocket 续连
+              // 时拿到新 token）。
+              w.refreshToken(cur.accessToken);
             }
           } catch (err) {
             // token 端点失败时保持现有连接（WPS 自己会断），下次 tick 再试

@@ -49,10 +49,18 @@ export default function App() {
   const deezerEditorials = useDeezerEditorials();
 
   // WPS 仅在 spotify Premium 时启用；Free / 其他 provider 走 <audio> + 30s 预览。
-  const wps = useSpotifyWpsPlayer({
-    enabled: player.provider === 'spotify' && auth.auth.tier === 'premium',
-  });
+  const wpsEnabled = player.provider === 'spotify' && auth.auth.tier === 'premium';
+  const wps = useSpotifyWpsPlayer({ enabled: wpsEnabled });
   wpsRef.current = wps;
+
+  // 当 WPS 从 disconnected → connected 时，当前歌如果已经在播（30s 预览），
+  // 需要重调 presentTrack 让 usePlayer 切到 WPS 全曲播放路径。
+  useEffect(() => {
+    if (wps.wpsReady && player.track?.provider === 'spotify') {
+      player.refreshTrackForWps();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wps.wpsReady]);
 
   // WPS → progress bar：把 SDK 上报的播放位置 / 时长喂回 usePlayer，让
   // ProgressBar / 时间轴与其它平台一致。

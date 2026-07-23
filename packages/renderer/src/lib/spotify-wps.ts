@@ -41,10 +41,19 @@ export interface WpsPlayerState {
 export interface WpsWrapper {
   /** SDK 是否已 ready（connect 完成）。 */
   readonly ready: boolean;
+  /** EME / Widevine CDM 初始化是否成功（无 initialization_error）。 */
+  readonly emeOk: boolean;
+  /** SDK ready 事件已 fire 且有 deviceId。 */
+  readonly hasDeviceId: boolean;
+  /** 注册一个回调在 SDK ready 事件 fire 且拿到 deviceId 后调用。 */
+  onSdkReady(cb: () => void): void;
   /** 注册一个状态变更订阅。返回 unsubscribe。 */
   onStateChange(cb: WpsStateCallback): () => void;
   /** 用新 token 重新连接（refresh 轮换时）。会断开旧 player 再建。 */
   connect(token: string): Promise<void>;
+  /** 仅刷新内部 getToken（不重建 connection）。用在 token 1h 到期续期时，
+   *  让 SDK 的 getOAuthToken 回调能拿到新 token，无需打断当前播放。 */
+  refreshToken(token: string): void;
   /** 断开 + 不再 connect。 */
   disconnect(): void;
   /** 播放 spotify:track:{id} 或 spotify:uri。SDK 内部会切到本设备。 */
@@ -86,6 +95,7 @@ interface SpotifyPlayer {
   previousTrack?(): Promise<void>;
   // SDK 事件回调各自 payload 不同，统一收成 unknown，回调里 narrow。
   on(event: string, cb: (payload: unknown) => void): void;
+  addListener?(event: string, cb: (payload: unknown) => void): boolean;
 }
 
 interface SpotifyWebPlaybackState {
@@ -106,16 +116,23 @@ type SpotifySdk = NonNullable<typeof window.Spotify>;
 
 let sdkPromise: Promise<SpotifySdk> | null = null;
 
-/** 等待 SDK 脚本（index.html 已经 defer 加载）。 */
+/** 等待 SDK 脚本（index.html 已经 defer 加载）。
+ *  不 poll window.Spotify（那可能还没初始化完就开始建 Player 崩溃），
+ *  改用 __wpsSdkReady 旗位——index.html 的 onSpotifyWebPlaybackSDKReady
+ *  被 SDK 调用后才置 true。 */
 function waitForSdk(): Promise<SpotifySdk> {
-  if (window.Spotify) return Promise.resolve(window.Spotify);
+  if ((window as unknown as { __wpsSdkReady?: boolean }).__wpsSdkReady && window.Spotify) {
+    return Promise.resolve(window.Spotify);
+  }
   if (sdkPromise) return sdkPromise;
   sdkPromise = new Promise<SpotifySdk>((resolve, reject) => {
     const start = Date.now();
     const tick = () => {
-      if (window.Spotify) return resolve(window.Spotify);
+      if ((window as unknown as { __wpsSdkReady?: boolean }).__wpsSdkReady && window.Spotify) {
+        return resolve(window.Spotify);
+      }
       if (Date.now() - start > 5000) {
-        return reject(new Error('spotify-wps: SDK script 未在 5s 内 ready'));
+        return reject(new Error('spotify-wps: SDK 未在 5s 内 ready'));
       }
       setTimeout(tick, 50);
     };
@@ -132,6 +149,11 @@ function makeDeviceName(): string {
 export function createWpsWrapper(): WpsWrapper {
   let player: SpotifyPlayer | null = null;
   let getToken: (() => Promise<string | null>) | null = null;
+  // WPS 致命错误：initialization_error / authentication_error / account_error
+  // 任意一个 fire 则无法播放，useSpotifyWpsPlayer 据此退到 30s 预览
+  let wpsFatal = false;
+  let deviceId: string | null = null;
+  const readyCallbacks: Array<() => void> = [];
   // 设备名在 wrapper 生命周期内固定：token 续期重连时复用同一名字，
   // Spotify Connect 才会把推流继续路由到同一设备（否则每次重连都冒出一个
   // 新设备、播放会断）。
@@ -178,25 +200,44 @@ export function createWpsWrapper(): WpsWrapper {
       });
     };
     const onReady = (payload: unknown): void => {
-      // 切到本设备：Spotify Connect 客户端调 PUT /v1/me/player 切到本 deviceId
-      // 即可（由 useSpotifyWpsPlayer 拿到 deviceId 后经 transferHere() 完成）。
       const info = payload as { device_id?: string };
       if (info?.device_id) {
-        (player as unknown as { _deviceId?: string })._deviceId = info.device_id;
+        (p as unknown as { _deviceId?: string })._deviceId = info.device_id;
+        deviceId = info.device_id;
+        readyCallbacks.forEach((cb) => { try { cb(); } catch { /* ignore */ } });
+        readyCallbacks.length = 0;
       }
     };
     const onNotReady = (): void => {
       emit({ hasTrack: false, isPlaying: false, track: null, positionMs: 0 });
     };
-    const onError = (label: string) => (payload: unknown): void => {
-      console.warn(`[spotify-wps] ${label}:`, payload);
+    // SDK 提供 .addListener()，.on() 是 alias
+    // 'initial_state' 不是 SDK 正式事件——去掉，只 listen 官方文档的 6 个事件
+    const on = (event: string, cb: (p: unknown) => void) => {
+      if (typeof p.addListener === 'function') {
+        p.addListener(event, cb as never);
+      } else if (typeof (p as SpotifyPlayer).on === 'function') {
+        (p as SpotifyPlayer).on(event, cb);
+      }
     };
-    p.on('player_state_changed', onPlayerStateChanged);
-    p.on('ready', onReady);
-    p.on('not_ready', onNotReady);
-    p.on('initial_state', onPlayerStateChanged);
-    p.on('authentication_error', onError('authentication_error'));
-    p.on('playback_error', onError('playback_error'));
+    on('player_state_changed', onPlayerStateChanged);
+    on('ready', onReady);
+    on('not_ready', onNotReady);
+    on('authentication_error', (e: unknown) => {
+      wpsFatal = true;
+      console.warn('[spotify-wps] authentication_error:', e);
+    });
+    on('playback_error', (e: unknown) => {
+      console.warn('[spotify-wps] playback_error:', e);
+    });
+    on('initialization_error', (e: unknown) => {
+      wpsFatal = true;
+      console.warn('[spotify-wps] initialization_error:', e);
+    });
+    on('account_error', (e: unknown) => {
+      wpsFatal = true;
+      console.warn('[spotify-wps] account_error:', e);
+    });
   }
 
   async function connect(token: string): Promise<void> {
@@ -210,20 +251,20 @@ export function createWpsWrapper(): WpsWrapper {
       }
       player = null;
     }
-    const p = new Spotify.Player({
-      name: deviceName,
-      getOAuthToken: (cb) => {
-        // SDK 会在 WebSocket 续连时回调；此时调我们的 token getter。
-        if (getToken) {
-          void getToken().then((t) => (t ? cb(t) : cb(token)));
-        } else {
-          cb(token);
-        }
-      },
-      volume: 0.8,
-    });
-    bindListeners(p);
-    const ok = await p.connect();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p: any = new Spotify.Player({
+        name: deviceName,
+        getOAuthToken: (cb: (t: string) => void) => {
+          if (getToken) {
+            void getToken().then((t) => (t ? cb(t) : cb(token)));
+          } else {
+            cb(token);
+          }
+        },
+        volume: 0.8,
+      });
+      bindListeners(p);
+      const ok = await p.connect();
     if (!ok) {
       throw new Error('spotify-wps: connect() 返 false');
     }
@@ -312,8 +353,21 @@ export function createWpsWrapper(): WpsWrapper {
     get ready() {
       return Boolean(player);
     },
+    get emeOk() {
+      return !wpsFatal && Boolean(player);
+    },
+    get hasDeviceId() {
+      return Boolean(deviceId);
+    },
+    onSdkReady(cb: () => void): void {
+      if (deviceId) { cb(); return; }
+      readyCallbacks.push(cb);
+    },
     onStateChange,
     connect,
+    refreshToken(token: string): void {
+      getToken = async () => token;
+    },
     disconnect,
     play,
     resume,

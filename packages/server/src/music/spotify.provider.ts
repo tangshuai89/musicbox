@@ -30,9 +30,10 @@ const SPOTIFY_CLIENT_ID_KEY = 'secrets:spotify-client-id';
 const SPOTIFY_API = 'https://api.spotify.com/v1';
 const SPOTIFY_ACCOUNTS = 'https://accounts.spotify.com';
 const SPOTIFY_SCOPES = [
+  'user-read-private',     // /v1/me → 拿 product（premium/free）做 WPS 路由
+  'user-read-email',       // 用户名 / 邮箱
   'user-library-read',     // 读 liked
   'user-library-modify',   // 写 liked
-  'user-read-email',       // 读 /v1/me → 拿 product（premium/free）做 WPS 路由
   'streaming',             // Web Playback SDK 必需（Premium 校验）
   'user-modify-playback-state', // WPS 的 transfer/resume/seek
 ].join(' ');

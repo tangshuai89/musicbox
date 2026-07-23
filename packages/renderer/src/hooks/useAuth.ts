@@ -7,6 +7,7 @@ import {
   loginNeteaseCookie,
   setSpotifyClientId,
   startSpotify,
+  redeemSpotifyCode,
 } from '../api';
 import type { AuthStatus, AuthUser, MusicProvider } from '../api';
 
@@ -159,25 +160,62 @@ export function useAuth(
     try {
       const status = await getSpotifyStatus();
       if (!status.hasClientId) {
-        const id = window.prompt(
-          '需要先在 Spotify Developer 后台创建应用，拿到 client_id 后粘到这里：\n' +
-            '（https://developer.spotify.com/dashboard → Create app）',
-        );
+        let id: string | null = null;
+        try {
+          id = window.prompt(
+            '需要先在 Spotify Developer 后台创建应用，拿到 client_id 后粘到这里：\n' +
+              '（https://developer.spotify.com/dashboard → Create app）',
+          );
+        } catch {
+          setError('未配置 Spotify client_id。请在 .env 中设置 SPOTIFY_CLIENT_ID=');
+          return;
+        }
         if (!id || !id.trim()) {
           setError('已取消：未填 Spotify client_id');
           return;
         }
         await setSpotifyClientId(id.trim());
       }
-      const { authorizeUrl } = await startSpotify();
+      // Electron: maestro:// 协议 — 打开系统浏览器授权，OS 调回 app 后 main process
+      // IPC 发 code+state 给 renderer，renderer 调 redeem 端点拿 cookie。
       if (isElectron && window.electronAPI?.openExternal) {
+        const { authorizeUrl } = await startSpotify('maestro://spotify-callback');
         await window.electronAPI.openExternal(authorizeUrl);
-      } else {
-        // 浏览器调试模式：直接新窗口打开
-        window.open(authorizeUrl, '_blank', 'noopener');
+        // 等 main process 的 spotify:oauth-protocol IPC
+        const result = await new Promise<{ code: string; state: string }>(
+          (resolve) => {
+            const handler = (...args: unknown[]) => {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const data = args[0] as any as { code: string; state: string };
+              window.electronAPI!.removeListener('spotify:oauth-protocol', handler);
+              resolve(data);
+            };
+            window.electronAPI!.on('spotify:oauth-protocol', handler);
+          },
+        );
+        const redeemed = await redeemSpotifyCode(result.code, result.state);
+        if (redeemed.ok) {
+          // 重新取 status——此时 session cookie 已写，tier 会是 redeem 后的正确值
+          const s = await getSpotifyStatus();
+          setAuth({
+            provider: 'spotify',
+            loggedIn: true,
+            user: {
+              nickname: redeemed.profile.displayName,
+              avatarUrl: '',
+              provider: 'spotify',
+            },
+            tier: s.tier,
+          });
+          loadNextTrack();
+        } else {
+          setError('Spotify 登录失败：redeem 失败');
+        }
+        return;
       }
-      // 轮询 status；Spotify 跳回 callback 后后端会入 session，
-      // 下一次轮询就会看到 loggedIn=true。
+      // 浏览器模式：window.open popup + polling cookie
+      const { authorizeUrl } = await startSpotify();
+      window.open(authorizeUrl, '_blank', 'noopener');
       const deadline = Date.now() + 90_000;
       while (Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 1500));

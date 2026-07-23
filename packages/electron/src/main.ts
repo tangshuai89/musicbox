@@ -232,11 +232,19 @@ function createWindow(): void {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js'),
-    },
+      // Spotify OAuth PKCE：renderer 里 window.open(authorizeUrl) 需要在
+      // Electron 内创建子 BrowserWindow 而不是跳系统浏览器——这样才能共享
+      // session cookie storage，使 login 完成后的 cookie 在主窗口 poll 时可见。
+      nativeWindowOpen: true,
+      // Widevine DRM：Spotify WPS 需要 EME + Widevine CDM 播放全曲
+      // 否则 SDK 初始化报 EMEError: No supported keysystem was found
+      plugins: true,
+      autoplayPolicy: 'no-user-gesture-required',
+    } as Electron.WebPreferences,
   });
 
   if (isDev) {
-    mainWindow.loadURL('http://localhost:5173');
+    mainWindow.loadURL('http://127.0.0.1:5173');
     // Open DevTools so users can see renderer console errors (e.g. audio
     // loading failures, network issues with the Deezer preview URL).
     mainWindow.webContents.openDevTools({ mode: 'detach' });
@@ -250,7 +258,7 @@ function createWindow(): void {
   if (!isDev) {
     mainWindow.webContents.once('did-finish-load', () => {
       mainWindow?.webContents.send('sidecar-ready', {
-        apiBase: `http://localhost:${SIDECAR_PORT}`,
+        apiBase: `http://127.0.0.1:${SIDECAR_PORT}`,
       });
     });
   }
@@ -271,10 +279,10 @@ function createWindow(): void {
     },
   );
 
-  // Open external links in the OS browser rather than a new Electron window.
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
-    return { action: 'deny' };
+  // window.open handler: Spotify OAuth 需要 Electron 子窗口（session cookie 共享），
+  // 所以 allow 所有 popup；不需要的外部链接 renderer 走 shell.openExternal API。
+  mainWindow.webContents.setWindowOpenHandler(() => {
+    return { action: 'allow' };
   });
 
   // Close-to-tray: hide the window instead of quitting so playback keeps
@@ -661,6 +669,56 @@ ipcMain.on('player:state', (_event, state: PlaybackState) => {
 });
 
 // ── App lifecycle ───────────────────────────────────────────────────────────
+
+// 强制 Chromium 启用 EME + Widevine 组件。即使没外部 CDM，这个 flag 让
+// Chromium 自身尝试加载系统级别的 Widevine（如果 macOS 有的话）。
+app.commandLine.appendSwitch('enable-features', 'EncryptedMedia');
+
+// Spotify OAuth：注册 maestro:// 自定义协议，回调时 macOS / Windows 调起 app
+if (process.defaultApp) {
+  if (process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient('maestro', process.execPath, [
+      path.resolve(process.argv[1]),
+    ]);
+  }
+} else {
+  app.setAsDefaultProtocolClient('maestro');
+}
+
+// 协议 URL 回调：OS 把 maestro://spotify-callback?code=...&state=... 递进来
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  console.log('[main] open-url:', url);
+  try {
+    // Spotify 回跳的 redirect_uri 常常带一个尾斜杠：
+    //   maestro://spotify-callback/?code=...   （有 /）
+    // 而 Dashboard 里注册的是  maestro://spotify-callback （无 /）
+    // → URL 解析不受影响（searchParams 不受路径影响），但 log 要精准
+    const normalized = url.replace(/\/\?/, '?');
+    const parsed = new URL(normalized);
+    const code = parsed.searchParams.get('code');
+    const state = parsed.searchParams.get('state');
+    console.log('[main] parsed code:', code, 'state:', state);
+    if (!code || !state) {
+      console.error('[main] open-url 缺 code 或 state，忽略');
+      return;
+    }
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      console.error('[main] mainWindow 尚未就绪，延迟 1s 再试');
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          console.log('[main] 延迟推送 spotify:oauth-protocol');
+          mainWindow.webContents.send('spotify:oauth-protocol', { code, state });
+        }
+      }, 1000);
+      return;
+    }
+    console.log('[main] IPC send spotify:oauth-protocol');
+    mainWindow.webContents.send('spotify:oauth-protocol', { code, state });
+  } catch (err) {
+    console.error('[main] open-url parse failed:', err);
+  }
+});
 
 app.whenReady().then(async () => {
   // 1. 启动 sidecar（prod 模式才有），等它就绪

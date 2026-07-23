@@ -103,6 +103,14 @@ const electronAPI = {
 
   /** Tell main we're in Electron so the renderer can branch its behaviour. */
   isElectron: true as const,
+
+  /** Generic IPC listener (e.g. spotify:oauth-protocol). */
+  on: (event: string, cb: (...args: unknown[]) => void): void => {
+    ipcRenderer.on(event, (_e, ...args) => cb(...args));
+  },
+  removeListener: (event: string, cb: (...args: unknown[]) => void): void => {
+    ipcRenderer.removeListener(event, cb);
+  },
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

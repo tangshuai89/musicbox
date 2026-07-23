@@ -253,6 +253,21 @@ export async function startSpotify(redirectUri?: string): Promise<{
   );
 }
 
+/** Electron 自定义协议回调：main process 收 maestro:// URL 后 IPC 传 code+state
+ *  给 renderer，renderer 调此端点直接把 session cookie 写进自己 cookie jar。
+ *  不需要 popup 或 cookie 共享。 */
+export async function redeemSpotifyCode(
+  code: string,
+  state: string,
+): Promise<{ ok: boolean; profile: { id: string; displayName: string } }> {
+  return json(
+    await fetch(
+      `${API_BASE}/auth/spotify/redeem?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`,
+      { credentials: 'include' },
+    ),
+  );
+}
+
 /** 检查 Spotify client_id 是否已设（不返回 id 本身）。 */
 export async function getSpotifyStatus(): Promise<{
   hasClientId: boolean;
