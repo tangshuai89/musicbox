@@ -15,7 +15,7 @@
     "electron-is-dev": "^2.0.0"
   },
   "devDependencies": {
-    "electron": "31.7.7",
+    "electron": "https://github.com/castlabs/electron-releases#v31.7.7+wvcus",
     "electron-builder": "^24.13.3",
     "typescript": "^5.5.4",
     "@types/node": "^22.0.0"
@@ -23,6 +23,8 @@
   "build": {
     "appId": "io.github.tangshuai89.maestro",
     "productName": "Maestro",
+    "afterPack": "afterPack-vmp.cjs",
+    "electronDist": "../../node_modules/electron/dist",
     "mac": {
       "category": "public.app-category.music",
       "target": "dmg",

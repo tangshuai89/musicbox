@@ -122,6 +122,28 @@ GET  /api/music/stream/spotify/{trackId}
   usePlayer 的时间轴，UI 其余部分对 WPS 无感知。
 - **feature flag**：整条 WPS 路径被 `tier === 'premium'` 门控。Free / 未登录 /
   非 spotify → `wpsReady` 恒 false，行为与 v1 完全一致。
+- **Electron 运行时（Widevine）**：WPS 靠 EME/Widevine CDM 解密整曲流，而
+  vanilla Electron 不带 CDM，且 Spotify 的 license 服务器要求宿主二进制带 VMP
+  （Verified Media Path）签名——手动下 CDM 也过不了 VMP，是死路。因此运行时换成
+  **castLabs Electron fork**（`github:castlabs/electron-releases#v31.7.7+wvcus`，
+  与官方 31.7.7 同版、drop-in）：内置 CDM + VMP 签名。`main.ts` 在建窗口前
+  `await components.whenReady()` 等 CDM 就绪。dev 直接跑该二进制，Premium 开箱能
+  播整曲；打包见下「打包 / VMP」。
+
+## 打包 / VMP
+
+electron-builder 会重组包 + macOS codesign，把 castLabs 原始 VMP 签名弄失效，
+所以打包产物必须用 castLabs EVS 重新 VMP 签名（且在 codesign 之前）。
+
+- `package.json build.afterPack` → `afterPack-vmp.cjs`：mac 平台调
+  `python3 -m castlabs_evs.vmp sign-pkg <appOutDir>`，早于 electron-builder 的
+  codesign 阶段。
+- `build.electronDist` 指向本地 castLabs `node_modules/.../electron/dist`，
+  避免 electron-builder 按版本号去官方镜像下 vanilla Electron（会丢 Widevine）。
+- **一次性前置（本机手动）**：`pip install --upgrade castlabs-evs` →
+  `python3 -m castlabs_evs.account signup`（免费 EVS 账号，凭据缓存本机）。
+- 逃生阀 `SKIP_VMP=1 npm run pack`：跳过签名，只验打包管线；产物的 Spotify
+  全曲不可用（退回 30s），其它源正常。
 
 ## v2 验收标准
 
@@ -133,6 +155,7 @@ GET  /api/music/stream/spotify/{trackId}
 - [x] `getValidTokenForRenderer`：无 session → null；有效 → 透传 accessToken + tier
 - [x] `SPOTIFY_SCOPES` 含 `user-read-email` + `streaming` + `user-modify-playback-state`
 - [x] typecheck 干净、renderer vite build 通过、SDK script 进构建产物
+- [x] electron 依赖换成 castLabs fork（`v31.7.7+wvcus`）、`components.whenReady()` 接入、`components.status()` 报 Widevine 就绪（不需 Premium）
 
 ### 需 Premium 账号手动验证（本轮开发者无 Premium，代码 code-complete 未运行验证）
 
@@ -140,6 +163,7 @@ GET  /api/music/stream/spotify/{trackId}
 - [ ] Spotify 桌面端能看到 "maestro-xxxx" 设备
 - [ ] pause / resume / skip / seek transport 生效
 - [ ] token 到期（1h）时自动重连不掉播
+- [ ] 打包 DMG（经 EVS VMP 签名）后 Premium 仍能播整曲
 
 ### Free 账号可验证（回退路径）
 
@@ -157,6 +181,18 @@ GET  /api/music/stream/spotify/{trackId}
 
 - **WPS 全链路未在本地运行验证**（开发者无 Premium）。缓解：Free 路径不变、
   WPS 被 tier 门控、写回路径有测试锁死。上线前需 Premium 账号跑一遍手动验收。
+  Widevine 坑已解（换 castLabs fork），`components.status()` 可在无 Premium 时验组件就绪。
+- **打包产物未验证**：VMP 签名需 castLabs EVS 账号（一次性 signup），且验整曲仍需
+  Premium。`npm run pack` 另受 packaging spec task 16 的环境依赖阻塞。`afterPack`
+  钩子已就位，逻辑 code-complete、未实跑。
+- **⚠️ 本机（腾讯 iOA）挡 Widevine CDM 下载**：castLabs 31.7.7 只有 `+wvcus`
+  变体——CDM 不打进二进制，首次 `components.whenReady()` 时从 Google 组件服务器
+  （`redirector.gvt1.com/edgedl/widevine-cdm/...`）运行时下载。实测本机该下载被 iOA
+  网关拦截：组件更新器 `Update completed with error 0` 但 `WidevineCdm/` 始终为空，
+  直接 curl CDM zip 返回的是 567 字节 HTML 拦截页（`<HTM...`）而非 ZIP（`PK..`）。
+  → **代码/配置正确**（typecheck+build 通过、`components.whenReady()` 已接），但本机
+  拉不到 CDM，全曲无法在此验证。换到无 TLS 拦截的网络（个人网络 / 已装 CDM 的机器）
+  即可。这是环境限制，非代码缺陷。
 - **WPS token 中途轮换**：SDK 不自动 refresh；`useSpotifyWpsPlayer` 每 30s 检查
   一次 expiresAt，将到期（<60s）就重拉 token + reconnect。设备名不变，位置能续。
 - **网络出口**：需能访问 `sdk.scdn.co` + `*.spotify.com`（含 wss）。仅在用户

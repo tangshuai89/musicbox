@@ -1,5 +1,8 @@
 import {
   app,
+  // castLabs Electron fork：components 模块负责加载/校验 Widevine CDM。
+  // 官方 electron 无此导出——本项目依赖已换成 github:castlabs/electron-releases。
+  components,
   BrowserWindow,
   shell,
   ipcMain,
@@ -236,8 +239,9 @@ function createWindow(): void {
       // Electron 内创建子 BrowserWindow 而不是跳系统浏览器——这样才能共享
       // session cookie storage，使 login 完成后的 cookie 在主窗口 poll 时可见。
       nativeWindowOpen: true,
-      // Widevine DRM：Spotify WPS 需要 EME + Widevine CDM 播放全曲
-      // 否则 SDK 初始化报 EMEError: No supported keysystem was found
+      // Widevine CDM 本身由 castLabs components 模块加载（见 app.whenReady）；
+      // 这里的 autoplayPolicy 让 WPS 能在无用户手势时直接起播当前曲，
+      // plugins 保持开启（无害，历史遗留）。
       plugins: true,
       autoplayPolicy: 'no-user-gesture-required',
     } as Electron.WebPreferences,
@@ -670,9 +674,9 @@ ipcMain.on('player:state', (_event, state: PlaybackState) => {
 
 // ── App lifecycle ───────────────────────────────────────────────────────────
 
-// 强制 Chromium 启用 EME + Widevine 组件。即使没外部 CDM，这个 flag 让
-// Chromium 自身尝试加载系统级别的 Widevine（如果 macOS 有的话）。
-app.commandLine.appendSwitch('enable-features', 'EncryptedMedia');
+// Widevine 由 castLabs fork 的 components 模块提供（见 app.whenReady 里的
+// components.whenReady()）。无需 enable-features 之类的 flag——vanilla Chromium
+// 的 EME 开关拿不到 CDM，那条老路已删。
 
 // Spotify OAuth：注册 maestro:// 自定义协议，回调时 macOS / Windows 调起 app
 if (process.defaultApp) {
@@ -721,6 +725,18 @@ app.on('open-url', (event, url) => {
 });
 
 app.whenReady().then(async () => {
+  // 0. 等 Widevine CDM 就绪。castLabs fork 内置 CDM + VMP 签名；Spotify Web
+  //    Playback SDK 靠 EME/Widevine 解密整首曲流，必须在建窗口前 whenReady，
+  //    否则 renderer 里 SDK 抢先初始化会报 initialization_error → 退回 30s 预览。
+  //    没有 Premium 也能验证组件本身就绪（status 里 Widevine=ready/registered）。
+  try {
+    await components.whenReady();
+    console.log('[main] widevine components ready:', components.status());
+  } catch (err) {
+    // 组件加载失败不阻塞启动——非 Spotify 源照常用，Spotify 自动退回 30s 预览。
+    console.error('[main] widevine components failed (Spotify 全曲不可用，退回 30s 预览):', err);
+  }
+
   // 1. 启动 sidecar（prod 模式才有），等它就绪
   try {
     await startSidecar();

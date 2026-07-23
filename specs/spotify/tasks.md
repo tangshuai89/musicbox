@@ -26,3 +26,17 @@
 - [x] 23. spotify.test.ts 加 5 条 v2 白盒（like PUT / unlike DELETE / like 401 / getValidTokenForRenderer 边界）——共 12 条
 - [x] 24. typecheck 干净 + npm test 全绿（55+ case）+ renderer vite build 通过 + SDK script 进产物
 - [ ] 25. 【需 Premium 手动】全曲播放 / 设备可见 / transport / token 重连 —— 开发者无 Premium，代码 code-complete 未运行验证（见 spec v2 验收）
+
+## v2.1（Widevine 运行时：换 castLabs Electron —— 解决 WPS 起不来的真正卡点）
+
+> v2 应用层 code-complete 但 vanilla Electron 无 Widevine CDM + 无 VMP 签名，
+> WPS 永远 initialization_error 退 30s。换 castLabs fork 解决。
+
+- [x] 26. electron devDep 换 `github:castlabs/electron-releases#v31.7.7+wvcus`（drop-in，同版）+ npm install
+- [x] 27. main.ts: import `components` + 建窗口前 `await components.whenReady()` + log `components.status()`
+- [x] 28. main.ts: 删无效的 `enable-features=EncryptedMedia` hack + 修 webPreferences Widevine 注释
+- [x] 29. 删死路脚本 scripts/get-widevine-cdm.js（手动下 CDM 过不了 VMP）
+- [x] 30. 打包 VMP：afterPack-vmp.cjs 调 `castlabs_evs.vmp sign-pkg`（codesign 前）+ build.afterPack + build.electronDist 指本地 castLabs dist
+- [x] 31. typecheck 干净 + build:electron 通过 + 启动看 components.status() Widevine 就绪
+- [ ] 32. ⚠️ 本机 iOA 挡 CDM 运行时下载：`components.whenReady()` 报 error 0 但 WidevineCdm/ 空，直连 CDM CDN 返回 567B HTML 拦截页。代码/配置正确，全曲无法在此机验证（见 spec v2 已知限制）
+- [ ] 33. 【需无 TLS 拦截网络 + Premium 手动】dev 下 CDM 能下 + Premium 播整曲；【需 EVS 账号 + Premium】打包 DMG VMP 签名后仍能播整曲
