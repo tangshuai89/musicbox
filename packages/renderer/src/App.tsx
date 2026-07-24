@@ -40,10 +40,15 @@ export default function App() {
   // wpsRef.current；wps 实例本身在所有 hook 之后再填进 ref。
   const wpsRef = useRef<ReturnType<typeof useSpotifyWpsPlayer> | null>(null);
 
-  const player = usePlayer(audioRef, wpsRef);
+  // Spotify tier 的快照 ref：在 auth hook 之后保持同步，供 tryUpgradeFromTrial
+  // 决定 Spotify Premium 是否应被当作有效全曲升级目标。
+  const spotifyTierRef = useRef<string | undefined>(undefined);
+
+  const player = usePlayer(audioRef, wpsRef, spotifyTierRef);
   const volume = useVolume(audioRef, player.track);
   const lyrics = useLyrics(player.track, player.provider, player.currentSources);
   const auth = useAuth(player.provider, player.loadNextTrack, player.setError);
+  spotifyTierRef.current = auth.auth.tier ?? undefined;
   const reco = useReco(player.playSearch, player.setError);
   const theme = useTheme();
   const deezerEditorials = useDeezerEditorials();

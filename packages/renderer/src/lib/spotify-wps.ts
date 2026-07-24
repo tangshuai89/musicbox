@@ -223,20 +223,29 @@ export function createWpsWrapper(): WpsWrapper {
     on('player_state_changed', onPlayerStateChanged);
     on('ready', onReady);
     on('not_ready', onNotReady);
+    // SDK 事件 payload 类型各异，统一收成 unknown 再 narrow。error 类事件
+    // 直接打 console 会变 `[object Object]`——JSON.stringify 让日志可读。
+    const fmtErr = (e: unknown): string => {
+      try {
+        return JSON.stringify(e);
+      } catch {
+        return String(e);
+      }
+    };
     on('authentication_error', (e: unknown) => {
       wpsFatal = true;
-      console.warn('[spotify-wps] authentication_error:', e);
+      console.warn('[spotify-wps] authentication_error:', fmtErr(e));
     });
     on('playback_error', (e: unknown) => {
-      console.warn('[spotify-wps] playback_error:', e);
+      console.warn('[spotify-wps] playback_error:', fmtErr(e));
     });
     on('initialization_error', (e: unknown) => {
       wpsFatal = true;
-      console.warn('[spotify-wps] initialization_error:', e);
+      console.warn('[spotify-wps] initialization_error:', fmtErr(e));
     });
     on('account_error', (e: unknown) => {
       wpsFatal = true;
-      console.warn('[spotify-wps] account_error:', e);
+      console.warn('[spotify-wps] account_error:', fmtErr(e));
     });
   }
 

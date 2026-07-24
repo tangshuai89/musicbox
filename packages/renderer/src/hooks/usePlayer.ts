@@ -51,8 +51,15 @@ const FALLBACK_PRIORITY: MusicProvider[] = [
 /**
  * 「完整曲流」平台：QQ / 网易云给的是全曲。Deezer/Spotify(非 Premium) 本身就是
  * 30s 预览，**不能**当作 VIP 试听升级的目标（换过去还是 30s，白换）。
+ * Spotify Premium (WPS) 是例外——见 getFullSongProviders()。
  */
 const FULL_SONG_PROVIDERS: MusicProvider[] = ['qq', 'netease'];
+
+/** 动态「完整曲流」平台：QQ/网易云固定 + Spotify（仅 Premium）. */
+function getFullSongProviders(spotifyTier?: string | null): MusicProvider[] {
+  if (spotifyTier === 'premium') return ['qq', 'netease', 'spotify'];
+  return FULL_SONG_PROVIDERS;
+}
 
 /** VIP 试听判定阈值：实际音频 ≤ TRIAL_MAX_SEC 秒、且元数据全长比它长 GAP 以上，
  *  就认定当前源是被 VIP 锁成的试听片段（QQ 试听常见 30s / 60s）。
@@ -109,6 +116,12 @@ export function usePlayer(
    * the existing <audio> path is used unchanged.
    */
   wpsRef?: RefObject<UseSpotifyWpsPlayer | null>,
+  /**
+   * Spotify product tier (premium/free/open/undefined). Passed as a ref to
+   * read the latest value without re-running effects. Used by tryUpgradeFromTrial
+   * to decide whether Spotify is a valid full-track upgrade target.
+   */
+  spotifyTierRef?: RefObject<string | undefined>,
 ) {
   const [provider, setProvider] = useState<MusicProvider | null>(() => {
     const params = new URLSearchParams(window.location.search);
@@ -452,8 +465,10 @@ export function usePlayer(
     };
 
     // 1) item 内其它「完整曲流」平台的源（快，无网络）。要求 !vipLocked——换到
-    //    另一个已知 VIP 锁的源没意义（还是试听），跳过它。
-    const inItem = FULL_SONG_PROVIDERS.filter((p) => !tried.has(p))
+    //    另一个已知 VIP 锁的源没意义（还是试听），跳过它。Spotify Premium 用户
+    //    额外纳入 Spotify 作为有效全曲目标（WPS 解全曲）。
+    const fullProviders = getFullSongProviders(spotifyTierRef?.current);
+    const inItem = fullProviders.filter((p) => !tried.has(p))
       .map((p) =>
         unified.sources.find(
           (s) => s.platform === p && s.hasCopyright && !s.vipLocked,
@@ -469,21 +484,20 @@ export function usePlayer(
       return;
     }
 
-    // 2) 服务端实时匹配（每首歌一次），只接受完整曲流平台的结果。
+    // 2) 服务端实时匹配（每首歌一次），同样接受动态全曲源。
     if (trialServerTriedRef.current) return;
     trialServerTriedRef.current = true;
-    const songId = unified.id; // 快照：await 期间可能切歌，回来要校验。
+    const songId = unified.id;
     try {
       const src = await findEquivalentSource(cur.provider, {
         title: display.title,
         artist: display.artist,
         duration: display.duration,
       });
-      // 竞态守卫：await 期间切了别的歌 → 丢弃。
       if (currentUnifiedRef.current?.id !== songId) return;
       if (
         src &&
-        FULL_SONG_PROVIDERS.includes(src.platform) &&
+        fullProviders.includes(src.platform) &&
         !triedPlatformsRef.current.has(src.platform)
       ) {
         console.warn(
@@ -495,7 +509,7 @@ export function usePlayer(
     } catch {
       // 匹配失败 → 保持现状（继续放 30s 试听，best-effort）。
     }
-  }, [presentFallbackSource]);
+  }, [presentFallbackSource, spotifyTierRef]);
 
   /**
    * 检测到 VIP 试听片段后的处理，两步（先便宜的、再兜底）：

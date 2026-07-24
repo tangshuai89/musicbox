@@ -36,6 +36,13 @@ const SPOTIFY_SCOPES = [
   'user-library-modify',   // 写 liked
   'user-read-playback-state',  // WPS device / playback state
   'user-modify-playback-state', // WPS 的 transfer/resume/seek
+  // Spotify 官方说 Web Playback SDK 不需要 streaming scope，但实测 2024+ 改版
+  // 后 WPS 在建立 WebSocket 时仍会校验该 scope——缺失会立刻触发
+  // authentication_error 事件（log 里 [spotify-wps] authentication_error）。
+  // Spotify 自己标 streaming 为 deprecated 但没移除服务端校验，所以保险起见
+  // 保留：拿它换「WPS 跑得起来 + search/like 写权限 + Premium 校验」。多给
+  // 一个 scope 不影响已有授权。
+  'streaming',
 ].join(' ');
 
 /** Spotify product tier from /v1/me's `product` field. Drives the renderer's

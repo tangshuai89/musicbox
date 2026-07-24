@@ -45,6 +45,12 @@ const LYRICS_SOURCE_PRIORITY: MusicProvider[] = ['qq', 'netease', 'deezer'];
 const LYRICS_CACHE_TTL_MS = 10 * 60 * 1000;
 const LYRICS_CACHE_MAX = 2_000;
 
+/** 跨平台等价曲搜索（同 (session, platform, title+artist kw)）的内存缓存 TTL。
+ *  比歌词缓存短得多——只用于「同一次事件窗口内的并发去重」，放过几分钟用户
+ *  重新点这首歌就当新鲜搜。 */
+const EQUIV_SEARCH_CACHE_TTL_MS = 30_000;
+const EQUIV_SEARCH_CACHE_MAX_PER_SESSION = 256;
+
 /** 有任何一行 time>0 才算 synced——lyrics.ovh / Deezer 纯文本歌词全部
  *  time=0，前端据此关掉滚动高亮和点击跳转。 */
 function isSynced(lines: LyricLine[]): boolean {
@@ -1122,6 +1128,31 @@ export class MusicService {
   ): Promise<Track | null> {
     const kw = `${meta.title} ${meta.artist}`.trim();
     if (!kw) return null;
+    // 短 TTL 缓存：同一 session 在 ≤30s 内对同一 (platform, kw) 的等价曲搜索
+    // 返回同样结果——like sync 的 resolveEquivalents 与 renderer 的
+    // tryUpgradeFromTrial 都会调 searchEquivalent，二者经常并发（VIP 试听
+    // 检测触发降级的同时用户也在点 ❤ 触发 discover），不去重会把 QQ 后端
+    // 当成并行批量搜索来打。两层 log 也跟着刷。30s 足够覆盖这两个事件窗口。
+    // key 用 sessionId 隔离多用户；null 结果也缓存（避免被打挂的 platform
+    // 反复探）。每个 session 上限 256 条，超出时按时间淘汰最早的。
+    const cacheKey = `${session.id}|${platform}|${kw}`;
+    const cached = this.equivSearchCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < EQUIV_SEARCH_CACHE_TTL_MS) {
+      return cached.track;
+    }
+
+    const result = await this.searchEquivalentUncached(session, platform, meta, kw);
+    this.equivSearchCache.set(cacheKey, { at: Date.now(), track: result });
+    this.pruneEquivSearchCache();
+    return result;
+  }
+
+  private async searchEquivalentUncached(
+    session: Session,
+    platform: MusicProvider,
+    meta: LikeMeta,
+    kw: string,
+  ): Promise<Track | null> {
     try {
       let tracks: Track[] = [];
       if (platform === 'qq') {
@@ -1176,14 +1207,52 @@ export class MusicService {
         return t;
       }
 
-      // 匹配失败 → 记日志方便排查。
+      // 第三遍：歌名**完全相同**（normalizeKey 后逐字相等）+ 时长接近 → 接受，
+      // **不再校验艺人**。解决「QQ 用 "浜崎あゆみ"（日文汉字 + 平假名） vs
+      // Spotify 用 "Ayumi Hamasaki"」、「QQ 用 "浜崎あゆみ" vs 网易云用 "滨崎步"
+      // （同字不同形体 / 同人不同译名）」这类跨脚本同字 / 同人异译。title 精确
+      // 相等是极强信号——同名歌（无论艺人名写法差异）+ 时长 ±3s 基本可视为同一首。
+      // 仍排除 title 仅 includes 的（防 "Love" 撞 "Love Story" 这种巧合）。
+      for (const t of tracks) {
+        const tt = this.normalizeKey(t.title, '');
+        if (!tt || tt !== wantTitleKey) continue;
+        if (this.durationMismatch(meta.duration, t.duration)) continue;
+        this.logger.log(
+          `searchEquivalent ${platform} title-exact match (artist ignored): ` +
+            `"${t.title} - ${t.artist}" ← "${meta.title} - ${meta.artist}"`,
+        );
+        return t;
+      }
+
+      // 第四遍：full key（title+artist）跨文字系统 + 时长接近 → 接受。
+      // 第三遍要求 title 完全相同——但 "調子のっちゃって"（日文）≠ "Cho Si
+      // Noccha Te"（罗马字），normalizeKey 后一个是 CJK、一个是 Latin，看不出
+      // 等同。两者 duration 完全相同（282s）说明是同一首歌。此类情况在日音
+      // 库非常常见（Spotify 用罗马字标题，QQ/网易云用汉字/假名）。
+      for (const t of tracks) {
+        const tk = this.normalizeKey(t.title, t.artist);
+        // 跨文字系统判定：一方纯 CJK/含 CJK、另一方纯 Latin（isCrossScript
+        // 已经包含了这层）。加上 duration 门限防止误命中。
+        if (!this.isCrossScript(tk, wantKey)) continue;
+        if (this.durationMismatch(meta.duration, t.duration)) continue;
+        this.logger.log(
+          `searchEquivalent ${platform} cross-script title match: ` +
+            `"${t.title} - ${t.artist}" ← "${meta.title} - ${meta.artist}"` +
+            ` (seedKey="${wantKey}", candKey="${tk}", dur=${meta.duration}≈${t.duration})`,
+        );
+        return t;
+      }
+
+      // 匹配失败 → 记日志方便排查。降级为 debug：「no match」本身不是异常——一
+      // 首歌没在所有平台都有同名等价曲。整体无匹配时的「no match on any of [...]」
+      // 仍走 log（最顶层的失败信号）。重复看到 per-platform no match 反而刷屏。
       const samples = tracks.slice(0, 3).map(
         (t) =>
           `"${t.title} - ${t.artist}"` +
           ` key="${this.normalizeKey(t.title, t.artist)}"` +
           ` dur=${t.duration}`,
       );
-      this.logger.log(
+      this.logger.debug?.(
         `searchEquivalent ${platform} no match for "${meta.title} - ${meta.artist}"` +
           ` (wantKey="${wantKey}" dur=${meta.duration}, ` +
           `candidates: [${samples.join(', ')}])`,
@@ -1858,6 +1927,26 @@ export class MusicService {
     for (const key of this.lyricsCache.keys()) {
       this.lyricsCache.delete(key);
       if (this.lyricsCache.size <= LYRICS_CACHE_MAX) break;
+    }
+  }
+
+  /** (sessionId|platform|kw) → 最近一次等价曲搜索结果。null 也缓存，避免被打挂
+   *  的 platform 在 30s 窗口内被反复探（同一个事件窗口内 like sync 的 discover
+   *  与 renderer 的 trial upgrade 会并发调 searchEquivalent）。 */
+  private readonly equivSearchCache = new Map<
+    string,
+    { at: number; track: Track | null }
+  >();
+
+  private pruneEquivSearchCache(): void {
+    if (this.equivSearchCache.size <= EQUIV_SEARCH_CACHE_MAX_PER_SESSION) {
+      return;
+    }
+    for (const key of this.equivSearchCache.keys()) {
+      this.equivSearchCache.delete(key);
+      if (this.equivSearchCache.size <= EQUIV_SEARCH_CACHE_MAX_PER_SESSION) {
+        break;
+      }
     }
   }
 
