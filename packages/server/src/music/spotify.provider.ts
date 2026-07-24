@@ -11,18 +11,18 @@ const SPOTIFY_CLIENT_ID_KEY = 'secrets:spotify-client-id';
  * Spotify Web API adapter。
  *
  * 设计取舍：
- *  - 不支持完整曲库播放（Spotify 不允许非 Premium 完整曲流），
- *    只走 preview_url（30s mp3，同 Deezer 限制）。UI 需要把这个限制
- *    明确告诉用户——避免他以为可以一直听下去。
+ *  - Premium 用户走 Web Playback SDK (WPS) 全曲播放；
+ *    Free / 未登录走 preview_url（30s mp3，同 Deezer 限制）。
+ *    UI 对 Free 用户需明确告知 30s 限制。
  *  - 鉴权用 OAuth PKCE：用户从浏览器/桌面端拿到 client_id（无需 secret），
  *    我们生成 verifier + challenge，跳到 accounts.spotify.com 授权，回调
  *    拿 token。refresh_token 长期有效，access_token 1 小时，自己续。
  *
  * 接口约定（沿用 provider 家族）：
  *  - isConfigured: 简单判断 token 存在
- *  - search: Web API /v1/search?q=&type=track&limit=30
+ *  - search: Web API /v1/search?q=&type=track&limit=10
  *  - getStreamPath: 返回 preview_url（直接当 audio src 用）
- *  - like / unlike: PUT/DELETE /v1/me/tracks
+ *  - like / unlike: PUT/DELETE /v1/me/library?uris=spotify:track:{id}（新端点）
  *  - fetchRadioBatch: Spotify 没"私人 FM"概念，给一个 30 首热门轨的退路
  *  - fetchLiked: GET /v1/me/tracks，importLiked 走它
  */
@@ -34,7 +34,7 @@ const SPOTIFY_SCOPES = [
   'user-read-email',       // 用户名 / 邮箱
   'user-library-read',     // 读 liked
   'user-library-modify',   // 写 liked
-  'streaming',             // Web Playback SDK 必需（Premium 校验）
+  'user-read-playback-state',  // WPS device / playback state
   'user-modify-playback-state', // WPS 的 transfer/resume/seek
 ].join(' ');
 
@@ -174,7 +174,14 @@ export class SpotifyMusicProvider {
         access_token: string;
         expires_in: number;
         refresh_token?: string; // 不一定回，不回就复用旧的
+        scope?: string; // 本次授予的实际 scope（诊断 403 写权限用）
       };
+      // 记录实际授予的 scope——排查「读能用、写 403」时一眼看出 token 里到底有没有
+      // user-library-modify（403 的头号成因是这个 token 根本没被授予写权限）。
+      this.logger.log(
+        `spotify token refreshed; granted scope=[${data.scope ?? '(未返回)'}]` +
+          `${data.scope && !data.scope.includes('user-library-modify') ? ' ⚠️ 缺 user-library-modify → 写红心会 403，需重新登录' : ''}`,
+      );
       const newTok: SpotifyAccessToken = {
         accessToken: data.access_token,
         refreshToken: data.refresh_token ?? refreshToken,
@@ -219,6 +226,10 @@ export class SpotifyMusicProvider {
     url.searchParams.set('code_challenge', codeChallenge);
     url.searchParams.set('scope', SPOTIFY_SCOPES);
     url.searchParams.set('state', state);
+    // 强制每次都弹同意页：否则 Spotify 对「已授权过」的返回用户会静默复用旧
+    // grant，可能回给一个缺 user-library-modify 的旧 scope token → 写红心 403。
+    // show_dialog=true 保证每次登录都按**当前**完整 scope 重新授予。
+    url.searchParams.set('show_dialog', 'true');
     return { authorizeUrl: url.toString(), state };
   }
 
@@ -275,7 +286,13 @@ export class SpotifyMusicProvider {
       access_token: string;
       refresh_token: string;
       expires_in: number;
+      scope?: string; // 本次授予的实际 scope
     };
+    // 登录成功即打印授予的 scope——若缺 user-library-modify，写红心必 403。
+    this.logger.log(
+      `spotify login granted scope=[${data.scope ?? '(未返回)'}]` +
+        `${data.scope && !data.scope.includes('user-library-modify') ? ' ⚠️ 缺 user-library-modify → 写红心会 403' : ''}`,
+    );
 
     // /v1/me 拿 tier + profile。失败不阻塞登录（退化成 free + 占位 profile），
     // 后续 getMeInfo 懒查询可以补上。
@@ -392,7 +409,9 @@ export class SpotifyMusicProvider {
     const url = new URL(`${SPOTIFY_API}/search`);
     url.searchParams.set('q', keyword);
     url.searchParams.set('type', 'track');
-    url.searchParams.set('limit', String(Math.min(limit, 50)));
+    // Spotify /v1/search 的 limit 上限是 10（不是 50）——超过会返 400。
+    // 想要更多结果用 offset 翻页（offset 上限 1000）。
+    url.searchParams.set('limit', String(Math.min(limit, 10)));
     const res = await fetch(url.toString(), {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -438,42 +457,96 @@ export class SpotifyMusicProvider {
     session: ProviderSession,
     trackId: string,
   ): Promise<{ success: boolean }> {
-    const token = await this.getValidAccessToken(session);
-    if (!token) throw new BadRequestException('spotify_not_logged_in');
-    const res = await fetch(`${SPOTIFY_API}/me/tracks`, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ ids: [trackId] }),
-    });
-    if (!res.ok) {
-      this.logger.warn(`spotify like ${res.status}`);
-      return { success: false };
-    }
-    return { success: true };
+    return this.writeSavedTrack(session, trackId, 'PUT');
   }
 
   async unlike(
     session: ProviderSession,
     trackId: string,
   ): Promise<{ success: boolean }> {
-    const token = await this.getValidAccessToken(session);
+    return this.writeSavedTrack(session, trackId, 'DELETE');
+  }
+
+  /**
+   * 写 / 删「已收藏」曲目（PUT / DELETE /v1/me/library，新端点）。
+   *
+   * 老端点 PUT/DELETE /v1/me/tracks 已被 Spotify 标为 deprecated，实测发现
+   * 它在「曲目在用户市场不可用」时会以 403 响应但**仍把曲目写进用户库**——
+   * 造成本地态显示「写远端失败」但 Spotify 端实际已写入的诡异状态。新端点
+   * /v1/me/library 用 ?uris=spotify:track:{id} 形式（query 参数）替代，
+   * 不再用旧端点的 403 market restriction 行为。
+   *
+   * 401 自愈：`getValidAccessToken` 只在 token **快到期**时才 refresh，靠的是
+   * 本地 `expiresAt`。但缓存的 access_token 可能在到期前就被 Spotify 判失效
+   * （时钟漂移 / 别处刷新过 / token 撤销），此时 `expiresAt` 还显示有效 →
+   * 拿旧 token 直接打 → 401。这是「Spotify 基本标不上红心」最可能的成因。
+   * 修法：碰到 401 就**强制** refresh 一次（绕过 expiresAt 判断）再重打一次。
+   *
+   * 失败语义（对齐 LikeSyncQueue 的重试口径）：
+   *  - 未登录（无 token / refresh 也失败）→ throw BadRequestException（队列视为
+   *    致命，不浪费 64s 退避重试一个死会话）。
+   *  - 其余非 2xx（401 refresh 后仍 401 / 403 / 429 / 5xx）→ 返回
+   *    `{ success: false }`**不抛**，交给队列按普通错误退避重试；带 body 记日志
+   *    便于排查。**绝不**为任何 4xx/5xx 抛 HttpException——那会让队列当致命错误
+   *    立即放弃，红心永远补不上。
+   */
+  private async writeSavedTrack(
+    session: ProviderSession,
+    trackId: string,
+    method: 'PUT' | 'DELETE',
+  ): Promise<{ success: boolean }> {
+    const verb = method === 'PUT' ? 'like' : 'unlike';
+    let token = await this.getValidAccessToken(session);
     if (!token) throw new BadRequestException('spotify_not_logged_in');
-    const res = await fetch(`${SPOTIFY_API}/me/tracks`, {
-      method: 'DELETE',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ ids: [trackId] }),
-    });
+
+    let res = await this.putDeleteSaved(token, trackId, method);
+    if (res.status === 401) {
+      // 缓存 token 已失效但 expiresAt 还没到 → 强制刷新一次再重试。
+      const tok = this.readToken(session);
+      const refreshed = tok?.refreshToken
+        ? await this.refreshAccessToken(session, tok.refreshToken)
+        : null;
+      if (refreshed) {
+        this.logger.warn(`spotify ${verb} 401 → 强制 refresh token 后重试`);
+        token = refreshed;
+        res = await this.putDeleteSaved(refreshed, trackId, method);
+      }
+    }
     if (!res.ok) {
-      this.logger.warn(`spotify unlike ${res.status}`);
+      const body = await res.text().catch(() => '');
+      this.logger.warn(`spotify ${verb} ${res.status}: ${body.slice(0, 300)}`);
+      // 403 之前当作 fatal 直接抛 BadRequestException（让队列一次即停、消息可
+      // 操作），但实测发现某些情况下 Spotify 会用 403 表示「曲目在用户所在市
+      // 场不可用」——该曲目仍会被加入收藏（只是显示为不可播）。一刀切 fatal
+      // 会导致本地态显示「写远端失败」但 Spotify 端其实已写入的诡异状态。
+      // 改成软失败让队列按 1s+2s+4s+8s+16s+32s 退避重试 7 次：真没权限会一直
+      // 失败 → 最终日志标 (giving up)；曲目市场限制等瞬时 403 则在后续重试
+      // 命中。错误体一并打到日志里方便事后定位（user-library-modify 缺失 vs
+      // 曲目市场限制 vs Dev Mode 配额，body 不一样）。
       return { success: false };
     }
     return { success: true };
+  }
+
+  private putDeleteSaved(
+    accessToken: string,
+    trackId: string,
+    method: 'PUT' | 'DELETE',
+  ): Promise<Response> {
+    // 用「Save Items to Library」新端点（/v1/me/library）而非已 deprecated 的
+    // /v1/me/tracks。新端点：
+    //  - 用 ?uris=spotify:track:{id} 形式（query 参数，逗号分隔），最多 40 条；
+    //  - 不再以「曲目在用户市场不可用」等理由统一返 403（这正是老端点写入成功却
+    //    报 403 的根因——body 里其实是"market"限制，但旧响应码一律 403 让
+    //    client 难区分 scope 缺失 / 配额限制 / 曲市场限制 / 显式拒绝）；
+    //  - 仍要求 user-library-modify scope，但 403 现在专指「真没权限」场景。
+    const uri = `spotify:track:${trackId}`;
+    const url = new URL(`${SPOTIFY_API}/me/library`);
+    url.searchParams.set('uris', uri);
+    return fetch(url.toString(), {
+      method,
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
   }
 
   /**

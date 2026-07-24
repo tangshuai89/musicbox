@@ -680,6 +680,33 @@ export class MusicController {
   }
 
   /**
+   * 「换个源找歌词」按钮触发：按"歌名 + 歌手"去每个有歌词 API 的平台搜同名同
+   * 时长的曲目，找到一个就拿它的歌词返回。是 `getLyricsAggregated` 的手动
+   * 兜底——主平台 + altSources + lyrics.ovh 全 miss 时用。
+   *
+   * Query: title=...&artist=...&duration=...
+   * Response: { lyrics, synced, source } 或 { lyrics: null }
+   */
+  @Get('lyrics/search')
+  async lyricsSearch(
+    @Query('title') title: string,
+    @Query('artist') artist: string,
+    @Query('duration') duration: string | undefined,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const session = this.sessionService.resolve(req, res);
+    const dur = duration ? Number(duration) : 0;
+    const result = await this.musicService.getLyricsByName(
+      session,
+      title ?? '',
+      artist ?? '',
+      Number.isFinite(dur) ? dur : 0,
+    );
+    return { lyrics: result.lines, synced: result.synced, source: result.source };
+  }
+
+  /**
    * Lyrics availability probe for search-result rows. Only checks the
    * platform sources (never lyrics.ovh — probing a whole result page
    * against a third party would be abusive); results land in the same

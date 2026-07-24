@@ -37,8 +37,8 @@ function PlatformBadges({ platforms }: { platforms: MusicProvider[] }) {
 }
 
 /**
- * "我的喜欢" 总览弹窗：展示所有平台已 ❤ 合并后的库（QQ + 网易云 v1，
- * Deezer / Spotify 留 TODO），支持滚动浏览千级条目；底部"重新导入"
+ * "我的喜欢" 总览弹窗：展示所有平台已 ❤ 合并后的库（QQ / 网易云 /
+ * Spotify / Deezer），支持滚动浏览千级条目；底部"重新导入"
  * 按钮触发一次全量 importLibrary 刷新库。
  *
  * 数据来源：服务端 /music/library 返回的 UnifiedSearchItem[]，本身已经
@@ -124,10 +124,10 @@ export default function LikedLibraryModal({
       return next;
     });
 
-  // 平台计数从「分组后的组」里数（一个组含该平台就算一次），与每行徽章一致。
-  // 跨平台都 ❤ 的歌会同时计入两个平台（两者之和可能 > 总数，符合直觉）。
   const qqCount = groups.filter((g) => g.platforms.includes('qq')).length;
   const neCount = groups.filter((g) => g.platforms.includes('netease')).length;
+  const spCount = groups.filter((g) => g.platforms.includes('spotify')).length;
+  const dzCount = groups.filter((g) => g.platforms.includes('deezer')).length;
 
   return (
     <Modal onClose={onClose} panelClassName="liked-modal-panel">
@@ -135,9 +135,12 @@ export default function LikedLibraryModal({
         <span className="liked-modal-title">❤ 我的喜欢</span>
         <span className="liked-modal-count">
           共 {groups.length} 首
-          {qqCount + neCount > 0 && (
+          {qqCount + neCount + spCount + dzCount > 0 && (
             <span className="liked-modal-count-detail">
-              {' '}· QQ {qqCount} · 网易云 {neCount}
+              {qqCount > 0 && ` · QQ ${qqCount}`}
+              {neCount > 0 && ` · 网易云 ${neCount}`}
+              {spCount > 0 && ` · Spotify ${spCount}`}
+              {dzCount > 0 && ` · Deezer ${dzCount}`}
             </span>
           )}
         </span>

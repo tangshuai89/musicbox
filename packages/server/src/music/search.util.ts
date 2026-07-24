@@ -4,6 +4,7 @@
  * 抽到独立文件是为了能直接被白盒测试覆盖（无需 DI 启动 NestJS）。
  * MusicService 内部也复用同一份实现。
  */
+import { Converter } from 'opencc-js';
 import type { Track } from './music.service';
 import type {
   SourceInfo,
@@ -91,62 +92,58 @@ export function stripFuriganaParens(s: string): string {
 }
 
 /**
- * 阶段 E2：CJK 跨语言形态合并表（简体 → 繁/日 同字不同码点）。
+ * 阶段 E2：CJK 跨语言形态合并。
  *
- * 同字不同码点的常见配对（Unicode 不做这层 NFKC 统一，所以 NFKC/NFD 都
- * 没用）：日文里的繁体/异体字 vs 简体中文的简体字。例：
- *   - 風 (U+98A8, 日) / 风 (U+98CE, 中简)
- *   - 學 (U+5B78, 繁/日) / 学 (U+5B66, 中简)
- *   - 氣 (U+6C17, 日) / 气 (U+6C14, 中简)
- *   - 國 (U+570B, 繁) / 国 (U+56FD, 中简)
- *   - 黑 (U+9ED1, 中简) / 黒 (U+9ED2, 日)
- *   - ... 还有 8-10 条常用对
+ * 核心引擎用 OpenCC（opencc-js）做繁→简转换，覆盖数千个繁/异体→简体映射
+ * （龍捲風→龙卷风、永遠→永远 等），不再靠手写几十条维护不过来的 CJK_UNIFIER 表。
  *
- * 策略：**单方向向"中简"靠**。这样 QQ / 网易云（CN 风格）不被改造，
- * 而日文平台（Watanabe / Kaze）的繁体字被改写成中简 → 跨平台能同 key。
+ * 策略不变：**单方向向"中简"靠**。QQ / 网易云（CN 风格）不被改造，
+ * Spotify / Deezer（经常用繁体/日文汉字）被推成简体 → 跨平台同 key。
  *
- * 在 normalizeKey 的 step 5（noise strip）之后、step 6（lowercase）之前
- * 应用。这个位置已经被前面阶段清理过标点，CJK 字面只剩 Han 字符，
- * unifier 命中率高。
+ * 在 normalizeKey 的 step 5（noise strip）之后、step 6（lowercase）之前应用。
  */
-export const CJK_UNIFIER: Record<string, string> = {
-  // 繁/日 → 中简
-  '風': '风',   // U+98A8 → U+98CE (日: 風 → 中: 风)
-  '學': '学',   // U+5B78 → U+5B66 (繁/日: 學 → 中: 学)
-  '國': '国',   // U+570B → U+56FD (繁: 國 → 中: 国)
-  '氣': '气',   // U+6C17 → U+6C14 (日: 氣 → 中: 气)
-  '黒': '黑',   // U+9ED2 → U+9ED1 (日: 黒 → 中: 黑)
-  '轉': '转',   // U+8EE2 → U+8F6C (繁/日: 轉 → 中: 转)
-  '龜': '龟',   // U+9F9C → U+9F9F (繁: 龜 → 中: 龟)
-  '龍': '龙',   // U+9BCC → U+9F99 (繁: 龍 → 中: 龙)
-  '廣': '广',   // U+5EE3 → U+5E7F (繁: 廣 → 中: 广)
-  '體': '体',   // U+9AD4 → U+4F53 (繁/日: 體 → 中: 体)
-  '畫': '画',   // U+756B → U+753B (繁/日: 畫 → 中: 画)
-  '對': '对',   // U+5C0D → U+5BF9 (繁/日: 對 → 中: 对)
-  '時': '时',   // U+6642 → U+65F6 (繁/日: 時 → 中: 时)
-  '個': '个',   // U+500B → U+4E2A (繁/日: 個 → 中: 个)
-  '會': '会',   // U+6703 → U+4F1A (繁/日: 會 → 中: 会)
-  '間': '间',   // U+9592 → U+95F4 (繁/日: 間 → 中: 间)
-  '從': '从',   // U+5F9E → U+4ECE (繁/日: 從 → 中: 从)
-};
 
-/**
- * CJK unifier 应用函数（导出便于测试）。
- * 不在表里的字符原样返回。
- */
-export function cjkUnify(s: string): string {
-  if (!s) return s;
-  return s.replace(CJK_UNIFIER_REGEX, (ch) => CJK_UNIFIER[ch] || ch);
+/** OpenCC tw→cn 转换器（模块加载一次）。 */
+let _tw2cn: ((text: string) => string) | null = null;
+function tw2cn(): (text: string) => string {
+  if (!_tw2cn) {
+    try {
+      _tw2cn = Converter({ from: 'tw', to: 'cn' });
+    } catch {
+      _tw2cn = (s: string) => s; // 极端兜底：无 OpenCC 的降级环境
+    }
+  }
+  return _tw2cn;
 }
 
 /**
- * 由 CJK_UNIFIER 的 keys 构建的 char-class regex（模块加载一次）。
- * 这样 normalizeKey 每调只 regex 一次，且表 key 跟 char class 自动同步。
+ * 日文特有形近汉字 → 中简（OpenCC tw→cn 不覆盖的日文独有形体）。
+ * 例如：日文用「気」(U+6C17)，繁体中文用「氣」，简体中文用「气」——
+ * tw→cn 处理「氣→气」，但「気」是日文独有形体，不走繁体中文路径。
  */
-const CJK_UNIFIER_REGEX: RegExp = (() => {
-  const keys = Object.keys(CJK_UNIFIER).join('');
+const JP_KANJI: Record<string, string> = {
+  '気': '气',   // U+6C17 → U+6C14 (日: 気, ≠ 繁: 氣 → 简: 气)
+  '黒': '黑',   // U+9ED2 → U+9ED1 (日: 黒, ≠ 中: 黑)
+};
+
+const JP_KANJI_REGEX: RegExp = (() => {
+  const keys = Object.keys(JP_KANJI).join('');
   return new RegExp(`[${keys}]`, 'g');
 })();
+
+/** @deprecated 保留供旧测试引用；生产走 cjkUnify()（OpenCC）。 */
+export const CJK_UNIFIER: Record<string, string> = { ...JP_KANJI };
+
+/**
+ * CJK 统一化：OpenCC 繁→简 + 日文独有形体兜底。
+ * 不在任何转换表里的字符原样返回。
+ */
+export function cjkUnify(s: string): string {
+  if (!s) return s;
+  s = tw2cn()(s);
+  s = s.replace(JP_KANJI_REGEX, (ch) => JP_KANJI[ch] || ch);
+  return s;
+}
 
 /**
  * 歌名+歌手归一化：把 title 和 artist 拼成一个跨平台匹配键。
@@ -172,14 +169,14 @@ const CJK_UNIFIER_REGEX: RegExp = (() => {
  *      katakana 长音号）→ '-'
  *   4) 智能引号 / 中文书名号 → 直引号
  *   5) 合并连续的"空白 + 标点 + 半角括号 + 直引号 + dash"到一组噪声字符并整段压缩
- *   5.5) [阶段 E2] CJK 跨语言形态合并（風→风 等）
+ *   5.5) [阶段 E2] CJK 跨语言形态合并（OpenCC 繁→简）
  *   6) 全小写
  */
 export function normalizeKey(title: string, artist: string): string {
   const stripped =
     `${stripFuriganaParens(stripFeatTags(title))} ` +
     `${stripFuriganaParens(stripFeatTags(artist))}`;
-  const raw = stripped
+  let raw = stripped
     // 1) 全角 ASCII（FF01..FF5E）→ 半角
     .replace(/[！-～]/g, (ch) =>
       String.fromCharCode(ch.charCodeAt(0) - 0xFEE0),
@@ -203,11 +200,11 @@ export function normalizeKey(title: string, artist: string): string {
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/[「」『』]/g, '"')
     // 5) 噪声字符合并：空白 + 标点 + 半角括号 + 直引号 + dash
-    .replace(/[\s\-_,.()\[\]<>'"′″·&+\/!?！？:：;；]+/g, '')
-    // 5.5) CJK 跨语言形态合并（阶段 E2）
-    .replace(CJK_UNIFIER_REGEX, (ch) => CJK_UNIFIER[ch] || ch)
-    // 6) 全小写
-    .toLowerCase();
+    .replace(/[\s\-_,.()\[\]<>'"′″·&+\/!?！？:：;；]+/g, '');
+  // 5.5) CJK 跨语言形态合并（OpenCC 繁→简 + 日文独有形兜底）
+  raw = cjkUnify(raw);
+  // 6) 全小写
+  raw = raw.toLowerCase();
   return raw;
 }
 

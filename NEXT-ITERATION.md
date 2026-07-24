@@ -5,37 +5,71 @@
 
 ## 当前状态（基线）
 
-Phase 0–5 + 前端架构重构（PR #13）已合入 `claude/next-iteration`，
-主要能力 4 个平台都跑通：登录、搜索、radio、跨平台 match、统一库、
-DeepSeek 推荐、跨平台 fan-out ❤、visionOS 风 Bento UI。
+Phase 0–5 + 前端架构重构（PR #13）+ Spotify v2 全曲播放 + ❤ 写回（PR #34–#39）
+均已合入 `master`。四大平台能力**端到端可用**：登录、搜索、radio、跨平台
+match、统一库、DeepSeek 推荐、跨平台 fan-out ❤、visionOS 风 Bento UI、
+Spotify Premium 全曲播放（Web Playback SDK + Widevine + castLabs Electron fork）。
 
-剩 ~15% 的工作集中在三类：
+剩 ~10% 的工作集中在三类：
 
-1. **生产化**：把 dev 跑得动的产品打包成能装的桌面包。
-2. **平台对等**：Spotify 还没做到全曲播放 + ❤ 写回。
-3. **UX 收尾**：歌词、第一帧、首次启动等小但高频场景的体验。
+1. **生产化最后一步**：`npm run pack` 端到端冒烟 + castLabs EVS VMP 签名
+   把"能装"做成"装完能 Premium 播整曲"。
+2. **Settings 收尾**：独立设置页（备份入口、DeepSeek key 管理、源连接健康、
+   渠道优先级）+ 首次启动引导流。
+3. **桌面体验与 AI 深化**：Lite 模式、桌面歌词浮窗、媒体键/全局热键、
+   自然语言歌单（战略重点）。
 
 ---
 
-## 1. 生产打包（packaging）— **优先级最高**
+## 1. 生产打包（packaging）— **接近完成，只剩端到端 + VMP 签名**
 
-- **Spec**: `specs/packaging/spec.md` + `tasks.md`（11/12 已勾，仅剩 README 同步）
-- **范围**：
-  - Electron main：prod 模式 spawn NestJS sidecar，等端口 ready 再 loadFile，
-    关闭时 kill（已实现，需要端到端跑通 `npm run pack` 出 dmg）
-  - preload 暴露 `apiBase` 到 `window.electronAPI.apiBase`（已实现）
-  - renderer `api.ts` 优先读 `electronAPI.apiBase`（已实现）
-  - `electron-builder` extraResources 把 `packages/server/dist` 打进 `.app/Contents/Resources/`
-  - 端到端验证：装 dmg → 启 App → 能选源 → 放歌 → 关 App 时 sidecar 退出
-- **验收**：
-  - [ ] `npm run pack` 成功出 macOS dmg
-  - [ ] 装到 `/Applications` 后双击启动：选源 → 电台放歌 → 重启 session 仍在
-  - [ ] 关 App 时 Activity Monitor 看 `node` 进程已退
-  - [ ] `packages/server/.storage/` 路径在 `~/Library/Application Support/Maestro/` 下
+- **Spec**: `specs/packaging/spec.md` + `tasks.md`（task 1–15 已勾，仅 task 16 端到端冒烟未跑）
+- **已完成**：
+  - ✅ Electron main：prod 模式 spawn NestJS sidecar + waitForSidecar + 关闭 kill（#4–#6）
+  - ✅ preload 暴露 `apiBase` 到 `window.electronAPI.apiBase`（#7）
+  - ✅ renderer `api.ts` 优先读 `electronAPI.apiBase`（#8）
+  - ✅ electron-builder extraResources：renderer / server / build 都进 `.app/Contents/Resources/`（#9、#13、#14）
+  - ✅ macOS 应用图标（`.icns`）+ Dock 图标 + macOS Tray（播放/暂停/上下首/显示/退出）
+    + 关窗到托盘、Cmd+Q 真退出并 kill sidecar（#15）
+  - ✅ Spotify Widevine 路径：换 castLabs Electron fork（`v31.7.7+wvcus`）
+    + `components.whenReady()` 接入（PR #39，specs/spotify v2.1）
+  - ✅ 打包 VMP 钩子：`packages/electron/afterPack-vmp.cjs` 在 codesign 前
+    调 `castlabs_evs.vmp sign-pkg`（含 `SKIP_VMP=1` 逃生阀），`build.electronDist`
+    指本地 castLabs dist（PR #39）
+- **仍剩**：
+  - [ ] **task 16**：`npm run pack` 端到端冒烟出 macOS dmg（packaging spec 16）——
+    需要 `npm install`（环境曾缺 7zip-bin 传递依赖，应已随 PR #39 lock 重生成恢复）
+  - [ ] **本机一次性**：`pip install castlabs-evs` + `python3 -m castlabs_evs.account signup`
+    跑通 VMP 签名（无 EVS 账号也可用 `SKIP_VMP=1 npm run pack` 跳签名，仅验打包管线）
+  - [ ] **Premium 手动验收**：装 dmg → 登录 Premium → 播完整曲目 + Spotify 桌面端可见
+    "maestro-xxxx" 设备 + transport 生效 + token 1h 重连不掉播
 - **风险**：
-  - 第一次跑 `electron-builder` 经常卡在 code signing（开发期 unset 即可）
-  - dev 模式 / prod 模式的 API base 解析路径都已实现，**主要剩冒烟测试**
-- **估时**：1–2 天（其中 1 天只是把它跑通 + 修 packaging 漏的小坑）
+  - 本机 iOA 拦 Widevine CDM 运行时下载（CDN `redirector.gvt1.com` 被 TLS 拦截——
+    直连返 567B HTML 拦截页）。已在无 iOA 网络 + 已装 CDM 的机器上绕开。
+  - EVS 签名是 castLabs 商业服务，但注册免费
+- **估时**：0.5–1 天（一次性环境准备 + 一次冒烟）
+
+---
+
+## 2. Spotify 平台对等 — **已基本完成，仅剩 Premium 手动验证**
+
+- **Spec**: `specs/spotify/spec.md` v1 + v2（v2 任务 1–24 全勾；v2.1 Widevine
+  任务 26–31 全勾，仅 32/33 需 Premium 手动）
+- **已完成**：
+  - ✅ OAuth PKCE 完整闭环（start / callback / refresh）（v1 task 1–2）
+  - ✅ Web API 搜索 + 字段映射到统一 Track（v1 task 5）
+  - ✅ ❤ 写回（`PUT /v1/me/tracks`）+ Free 账号也能写（v2 task 11–14）
+  - ✅ tier 缓存到 session，状态接口透出（v2 task 12、17、18）
+  - ✅ Web Playback SDK 完整包装（spotify-wps.ts + useSpotifyWpsPlayer），
+    含 token 续期重连、SDK ready 事件、wpsFatal/emeOk 兜底（v2 task 15–16）
+  - ✅ usePlayer 路由：spotify + premium + wpsReady → WPS 全曲；
+    否则回退 30s 预览（v2 task 20–21）
+  - ✅ SourceSelect 按 tier 切 desc（v2 task 19）
+  - ✅ Widevine 运行时换 castLabs fork + components.whenReady（v2.1）
+- **仍剩**（specs/spotify tasks 25、32、33）：
+  - [ ] Premium 手动：完整曲目播放 >30s / Spotify 桌面端可见设备 / transport / token 重连
+  - [ ] 打包 DMG 经 EVS VMP 签名后 Premium 仍能播整曲
+- **不做**：歌词（额外 scope，deferred）、曲末自动切歌（WPS 检测不可靠，已知限制）
 
 ---
 
@@ -84,26 +118,26 @@ DeepSeek 推荐、跨平台 fan-out ❤、visionOS 风 Bento UI。
 
 ---
 
-## 4. 歌词体验
+## 4. 歌词体验 — **基础体验已用，多源聚合还没做**
 
 - **当前**：单源歌词（QQ 优先，回退到 [lyrics.ovh](https://lyrics.ovh) 公开 API），synced 滚动
-- **范围**：
-  - 多源歌词聚合：先 QQ → NetEase → 第三方 → LRC 合并去重
-  - 词句点击 copy、点击 share (生成带 cover 的图分享到…哪都行，本地下载)
-  - "无歌词" 时引导用户从网易云提交（链过去）
-- **验收**：
+- **已完成**：
   - [x] 跨平台搜索结果行右侧显示 lyrics 可用性指示
   - [x] 复制整段歌词 vs 单行（toast 反馈）
-- **风险**：第三方 lyrics API 合规（GGD 之类），先不碰
+- **仍剩**：
+  - [ ] 多源歌词聚合：先 QQ → NetEase → 第三方 → LRC 合并去重
+  - [ ] 词句点击 share（生成带 cover 的图分享到本地）
+  - [ ] "无歌词" 时引导用户从网易云提交（链过去）
+- **风险**：第三方 lyrics API 合规（GDPR 之类），先不碰
 - **估时**：2–3 天
 
 ---
 
-## 5. 设置 / 首次启动收尾
+## 5. 设置 / 首次启动收尾 — **基本没动**
 
-- **问题**：现在没有 Settings 页；首次启动的体验全靠 SourceSelect + RecoKeyModal
+- **当前**：没有独立 Settings 页；首次启动体验靠 SourceSelect + RecoKeyModal
 - **范围**：
-  - 独立 `Settings` modal：DeepSeek key 重置、登录信息、库管理、备份入口、
+  - 独立 `Settings` modal：DeepSeek key 重置、登录信息、库管理、备份入口（#3.1 已实装）、
     "源连接健康"（每个平台最近 24h 拉取成功率）
   - 首次启动时引导流程：选源 → （如果要推荐）配 DeepSeek key → 完成
   - 没有选源就退出 App 时，提示确认
@@ -119,24 +153,10 @@ DeepSeek 推荐、跨平台 fan-out ❤、visionOS 风 Bento UI。
 > 本批 4 项来自产品侧一次集中提需求，粒度按"半天到两天一项"。
 > 6.x 里凡"并入 #N"的，不重复实现，跟对应老项一起做、共用入口。
 
-### 6.1 平台红心列表点击即播
+### 6.1 平台红心列表点击即播 — ✅ **已确认正常工作**
 
-- **现状核实（重要）**：`LikedLibraryModal.tsx:122` 的"我的喜欢"合并库弹窗，
-  点行已经走 `onPlay(items, idx)` → `usePlayer.playSearch`，**已可点播**，底部
-  还有"点击曲目直接播放"提示。产品反馈"上方按平台（QQ/网易云）拉取的红心列表
-  点击不播"，指的**不是这个合并弹窗**。
-- **范围**：
-  - **先定位**到底是哪个列表不可点播——是尚未接 `onPlay` 的另一处平台原始红心
-    列表，还是产品在跑**旧构建**（最新代码合并弹窗已可播）。开工第一步 `npm run dev`
-    对最新代码验证，别改一个已经好的功能。
-  - 若确有未接线的列表：行 `onClick` 复用现成的 `playSearch` / `onPlay(items, index)`
-    队列路径（与搜索结果、合并库同源），点整行即入队播放，❤ 徽章不误触。
-- **验收**：
-  - [ ] 该平台红心列表点任意行 → 立刻播放该曲，并以整列表作为播放队列
-  - [ ] 播放走 `bestSource`；全平台无版权的行灰态不可点（与 `SearchPanel` 一致）
-  - [ ] 与"我的喜欢"合并弹窗行为一致，无第二套重复播放逻辑
-- **风险**：极可能是"运行旧构建"的误报——务必先复现再动手。
-- **估时**：0.5 天（定位 + 接线）
+- **现状核实**：`LikedLibraryModal.tsx:122` 的"我的喜欢"合并库弹窗已可点播（`onPlay` → `usePlayer.playSearch`）。产品反馈指向另一处或旧构建——master 已无未接线列表。
+- **状态**：✅ 无需代码改动；如有复现请先确认跑的是最新 master。
 
 ### 6.2 渠道优先级配置（并入 #5 Settings）
 
@@ -174,7 +194,7 @@ DeepSeek 推荐、跨平台 fan-out ❤、visionOS 风 Bento UI。
 - **风险**：lite 只做**展示层裁剪**，复用现有 `usePlayer` 状态，别复制一套播放逻辑。
 - **估时**：1.5～2 天
 
-### 6.4 macOS Tray + Electron 应用图标（并入 #1 打包）
+### 6.4 macOS Tray + Electron 应用图标（并入 #1 打包）— ✅ **已完成**
 
 - **现状**：`packages/electron/src/` 只有 `main.ts` / `preload.ts`，**无 Tray、无自定义
   图标**（grep 无 `Tray` / `nativeImage` / `icon` 引用），Dock/关于面板是默认 Electron 图标。
@@ -201,7 +221,7 @@ DeepSeek 推荐、跨平台 fan-out ❤、visionOS 风 Bento UI。
 > 上已领先同类开源播放器；缺的是老牌桌面播放器的"基本功"（音效/桌面歌词/桌面集成）。
 > 本章前三项补基本功，7.4 深化 AI 护城河。详细分析只在 Notion 维护（个人重要，本地不留副本）→ https://app.notion.com/p/musicbox-2026-07-39c9be628711800b86f1daff4e05ad6b
 
-### 7.1 均衡器 EQ + 交叉淡入淡出 + ReplayGain 音量均衡
+### 7.1 均衡器 EQ + 交叉淡入淡出 + ReplayGain 音量均衡 — **未开始**
 
 - **目标**：补齐洛雪 / foobar2000 / MusicBee 都有的音效与音量能力。
 - **现状 / 复用点**：`usePlayer` 已在首次播放时惰性建了 **Web Audio graph**——EQ、淡入淡出、
@@ -217,7 +237,7 @@ DeepSeek 推荐、跨平台 fan-out ❤、visionOS 风 Bento UI。
 - **风险**：HTML `<audio>` 真 gapless 较难，优先做 crossfade（更可控）；ReplayGain 精确值要解码分析，先用元数据/近似。
 - **估时**：2–3 天
 
-### 7.2 桌面歌词浮窗
+### 7.2 桌面歌词浮窗 — **未开始**
 
 - **目标**：中文用户高频刚需（网易云/QQ/洛雪都有），你目前只有内嵌 synced 歌词。
 - **现状 / 复用点**：已有 synced 歌词数据（QQ 优先 + lyrics.ovh 回退）与播放进度。桌面浮窗 =
@@ -234,10 +254,13 @@ DeepSeek 推荐、跨平台 fan-out ❤、visionOS 风 Bento UI。
 - **依赖**：与 6.4 Tray、7.3 热键同做入口最顺。
 - **估时**：2 天
 
-### 7.3 媒体键 + 全局热键 + 系统「正在播放」（并入 6.4 Tray）
+### 7.3 媒体键 + 全局热键 + 系统「正在播放」（并入 6.4 Tray）— **部分（仅 Tray）**
 
 - **目标**：桌面集成基本功——耳机/键盘媒体键控制、全局快捷键、系统媒体中心显示当前歌。
-- **现状 / 复用点**：并进 6.4 的 Tray 一起做。renderer 用 `navigator.mediaSession` 设 metadata +
+- **现状**：6.4 的 Tray 已完成（macOS 菜单控制播放/暂停/上下首/显示/退出）。**尚未做**：
+  `navigator.mediaSession`（系统媒体控件/媒体键）、`globalShortcut`（全局热键）、
+  mac `MPNowPlayingInfoCenter`。
+- **现状 / 复用点**：renderer 用 `navigator.mediaSession` 设 metadata +
   action handler；Electron 用 `globalShortcut` 注册全局热键；三者共享同一套播放命令。
 - **范围**：
   - `navigator.mediaSession`：标题/歌手/封面 + play/pause/next/prev/seek（锁屏/系统媒体控件、部分平台媒体键）
@@ -251,7 +274,7 @@ DeepSeek 推荐、跨平台 fan-out ❤、visionOS 风 Bento UI。
 - **依赖**：并入 6.4 Tray。
 - **估时**：+1–1.5 天（叠加在 6.4 上）
 
-### 7.4 自然语言歌单（DeepSeek）— ⭐ 本期战略重点
+### 7.4 自然语言歌单（DeepSeek）— ⭐ 本期战略重点 — **未开始**
 
 - **目标**：**放大 AI 护城河**。对着播放器说人话——"放点适合夜跑的电子乐"/"周末慵懒的中文民谣"——
   直接生成可播队列。Spotify（DJ Requests / Prompted Playlists）、Apple（Playlist Playground）、
@@ -285,21 +308,29 @@ DeepSeek 推荐、跨平台 fan-out ❤、visionOS 风 Bento UI。
 
 ---
 
-## 排期建议（按用户对"什么时候能用上"的优先级）
+## 排期建议（下期，按"什么时候能用上"的优先级）
 
 | 周 | 内容 |
 | --- | --- |
-| W1 | #1 打包（让产品能装）+ **#6.4 Tray/图标**（并入打包）+ #3.1 导出/导入骨架 |
-| W2 | #2 Spotify 完整播放 + ❤ 写回 + **#6.1 平台红心点播**（0.5 天穿插） |
-| W3 | #5 Settings + **#6.2 渠道优先级**（并入 Settings）+ #4 歌词 |
-| W4 | **#6.3 Lite 模式** + 收尾、bug bash、本期发版 |
+| **W1** | #1 收尾：`npm run pack` 端到端冒烟 + EVS VMP 签名一次性 setup + Premium 手动验收（需无 iOA 网络 + Premium 账号） |
+| **W2** | #5 Settings（独立 modal：DeepSeek key、库管理、源连接健康）+ **#6.2 渠道优先级**（并入 Settings） |
+| **W3** | #6.3 Lite 模式（normal/lite 切换 + ✨ 入口接 reco-deepseek） + **7.4 NL 歌单先写 `specs/nl-playlist/spec.md`** |
+| **W4** | #4 歌词体验收尾（多源聚合 + share）+ 7.1 EQ / 7.2 桌面歌词（基本功打磨，优先级低于 W2/W3） |
+| **W5** | 7.4 NL 歌单落地 + 7.3 媒体键/全局热键收尾 + bug bash + 发版 |
 
-> **#7 竞品补强批次插入**：7.3 媒体键/热键随 W1 的 #6.4 Tray 一起做；7.1 EQ / 7.2 桌面歌词
-> 排在 W4–W5（基本功打磨）；**7.4 自然语言歌单作为本期战略重点单列**，建议 W2 起先写
-> `specs/nl-playlist/spec.md`、W4–W5 落地。
+> **本轮（已发）**：
+> - ✅ #1 包装主体 + #6.4 Tray/图标（packaging spec task 1–15）
+> - ✅ #2 Spotify v2 全部应用层（task 1–24 + v2.1 task 26–31）+ Widevine 运行时换 castLabs fork
+> - ✅ #3.1 加密备份 + 每日自动备份 + Electron 端 STORAGE_DIR 修正
+> - ✅ #6.1 红心点播核实（无需改动）
+>
+> **不在本期范围**：
+> - 6.x 全部不再做独立 PR（6.2 并入 #5、6.3 单做、6.4 已合、6.1 已合）
+> - 7.x 除 7.3 媒体键外都属于"打磨批次"，发版前不必全做完
+> - 7.4 NL 歌单要 W3 起 spec 先行（避免重蹈 6.4 一次性写大段发现的延迟）
 >
 > 上面的估时是"代码写完"，实际产出还要算 review + 跑 spec 下 `tasks.md` 验收。
-> 每项开工前先 `kb-spec <项目名>` 拉对应 spec 复习一遍。
+> 每项开工前先读对应 spec（`specs/<name>/spec.md`）复习一遍，再决定要不要新建 ADR。
 
 ## 工作流
 
@@ -310,6 +341,13 @@ DeepSeek 推荐、跨平台 fan-out ❤、visionOS 风 Bento UI。
 
 ## 知识库挂钩
 
-做完 #1 后，把"如何打包" 的踩坑沉淀到 `~/knowledge/maestro/packaging.md`；
-做完 #2 后沉淀 Spotify OAuth + Web Playback SDK 的 notes 到
-`~/knowledge/maestro/spotify.md`。这样下期迭代（或交接）的人有现成入口。
+**本轮（已发）的踩坑**还没沉淀到 `~/knowledge/maestro/`——下期开工前**优先**做：
+
+- `~/knowledge/maestro/packaging.md`：sidecar 启动 + waitForSidecar + 关窗到托盘 + Cmd+Q kill
+  + electron-builder extraResources / electronDist / afterPack（EVS VMP 签名 + codesign 时序）
+- `~/knowledge/maestro/spotify.md`：OAuth PKCE + tier 缓存 + WPS 包装（spotify-wps.ts
+  模式：window.__wpsSdkReady 旗位 + wpsFatal/emeOk/hasDeviceId 三态）
+  + **Widevine 铁三角**：vanilla Electron 无 CDM、无 VMP；castLabs fork 是唯一同版
+  drop-in；本机 iOA 拦 CDM CDN → 567B HTML 拦截页；换无 TLS 拦截网络或用 EVS 已签 .app
+
+这样下期迭代（或交接）的人有现成入口。

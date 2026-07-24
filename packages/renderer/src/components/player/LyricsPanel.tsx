@@ -15,6 +15,11 @@ interface Props {
   onCopyLine?: (text: string) => void;
   /** "歌名 歌手" — powers the no-lyrics NetEase submission link */
   noLyricsQuery?: string;
+  /**
+   * 「换个源找歌词」按钮回调。当前没有任何歌词时显示；点击后按歌名+歌手
+   * 去其他平台再搜一次。
+   */
+  onRetryByName?: () => void | Promise<void>;
 }
 
 /**
@@ -35,6 +40,7 @@ export default function LyricsPanel({
   onSeek,
   onCopyLine,
   noLyricsQuery,
+  onRetryByName,
 }: Props) {
   const listRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLDivElement>(null);
@@ -86,6 +92,16 @@ export default function LyricsPanel({
             ♫
           </div>
           <div className="lyrics-empty-hint">暂无歌词</div>
+          {onRetryByName && (
+            <button
+              type="button"
+              className="lyrics-retry-btn"
+              onClick={() => void onRetryByName()}
+              title="按歌名+歌手去其他平台（QQ / 网易云 / Deezer）再搜一次"
+            >
+              换个源找歌词
+            </button>
+          )}
           {noLyricsQuery && (
             <a
               className="lyrics-submit-link"

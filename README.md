@@ -14,10 +14,12 @@ Built with **Electron + React + NestJS** as a desktop-first client.
 > 🟢 **Phase 0–5 done; Phase 6 (frontend refactor + packaging) shipping.**
 > All four platform adapters, the unified search, the cross-platform
 > match engine, the importable unified library, DeepSeek recommendations,
-> heart fan-out, and the visionOS-style Bento glass UI are working today
-> in dev. The remaining work — production packaging, Spotify play/heart
-> write, and a few UX polish items — is in the
-> [next-iteration plan](./NEXT-ITERATION.md).
+> heart fan-out, the visionOS-style Bento glass UI, Spotify OAuth PKCE
+> with heart-write-back, and Premium full-track playback (via Web
+> Playback SDK + Widevine, run on the castLabs Electron fork) are
+> working today in dev. The remaining work — production packaging with
+> VMP signing, settings / lite-mode UX, and a few desktop polish items —
+> is in the [next-iteration plan](./NEXT-ITERATION.md).
 
 ---
 
@@ -79,11 +81,11 @@ Legend: ✅ done · 🚧 partial / in progress · 📋 planned
 | Capability                         | NetEase | QQ Music | Spotify | Deezer |
 | ---------------------------------- | :-----: | :------: | :-----: | :----: |
 | Log in                             | ✅ QR scan | ✅ cookie (embedded window) | ✅ OAuth PKCE | ✅ anonymous |
-| Play full track                    | ✅ | ✅ (std / 320 / lossless) | 🚧 30s preview | 🚧 30s preview |
+| Play full track                    | ✅ | ✅ (std / 320 / lossless) | ✅ Premium · 🚧 Free = 30s preview | 🚧 30s preview |
 | Radio / station feed               | ✅ private FM | 🚧 keyword-seeded pseudo-radio | 🚧 short preview | ✅ editorial charts |
 | Search                             | ✅ | ✅ | 🚧 limited | ✅ |
 | Local like / dislike               | ✅ | ✅ | ✅ | ✅ |
-| Sync ❤ back to the platform        | ✅ | ✅ | 📋 | ✅ |
+| Sync ❤ back to the platform        | ✅ | ✅ | ✅ | ✅ |
 | Import your existing liked songs   | ✅ | ✅ | ✅ | ✅ |
 
 ### Cross-cutting product features
@@ -100,10 +102,10 @@ Legend: ✅ done · 🚧 partial / in progress · 📋 planned
 | **Unified liked-songs library** (import + de-dup) | ✅ |
 | **DeepSeek BYO-key AI recommendations** | ✅ |
 | **Heart fan-out to all licensed platforms** | ✅ |
-| **Spotify adapter** (OAuth PKCE + read) | ✅ |
+| **Spotify adapter** (OAuth PKCE + read + ❤ write-back + WPS full-track for Premium) | ✅ |
 | Frontend architecture: CSS/tsx 解耦 + SCSS 7-1 + 拆巨石 | ✅ (PR #13) |
-| **Production packaging** (NestJS sidecar + prod API base) | 🚧 in progress |
-| Spotify full-track play + ❤ write | 📋 |
+| **castLabs Electron fork** (Widevine CDM + VMP signing for Spotify WPS) | ✅ (PR #39) |
+| **Production packaging** (NestJS sidecar + prod API base + EVS VMP signing) | 🚧 in progress |
 
 **Rough completion: ~85%.** The defining product features (unified search,
 match engine, library, DeepSeek recommendations, heart fan-out) all work

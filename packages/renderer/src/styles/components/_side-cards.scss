@@ -228,6 +228,35 @@
   }
 }
 
+// 「换个源找歌词」按钮——主源 + altSources + lyrics.ovh 全 miss 时，按歌名+歌手
+// 去其他有歌词 API 的平台再搜一次（QQ / 网易云 / Deezer）。命中即替换当前
+// 歌词；未命中保持空态（用户可再点或去网易云提交）。
+.lyrics-retry-btn {
+  margin-top: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+
+  &:hover {
+    background: var(--surface-2);
+    border-color: var(--accent);
+  }
+
+  &:active {
+    background: var(--surface-1);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
 .side-card-label {
   font-size: 10px;
   font-weight: 700;

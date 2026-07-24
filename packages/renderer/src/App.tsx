@@ -237,6 +237,7 @@ export default function App() {
             source={lyrics.source}
             track={player.track}
             onSeek={player.seek}
+            onRetryByName={lyrics.retryByName}
           />
         </div>
       </div>

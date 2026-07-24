@@ -323,6 +323,10 @@ export function usePlayer(
       // 同源重试的 guard 在每次 presentTrack 重置——跨平台 fallback 算新 URL,
       // 给 1 次重试机会。
       retryAttemptedRef.current = false;
+      // 清掉可能残留的「同源重试保位」——上一首歌的 transient 重试若在换歌前
+      // 没落地（load 失败 → loadedmetadata 没 fire），pendingSeekRef 会漏到这首
+      // 新歌把它错误地 seek 过去。换歌一律从 0 起。
+      pendingSeekRef.current = null;
       setCurrentTime(0);
       const audio = audioRef.current;
       if (audio) audio.dataset.wantPlay = '1';
@@ -523,9 +527,11 @@ export function usePlayer(
       // 让重载后的标准源重新做试听判定（setTrack 改 audioUrl 不走 presentTrack）。
       trialEvaluatedRef.current = false;
       setTrialFellBack(true); // UI 如实展示"标准(试听回退)"
-      setTrack((prev) =>
-        prev ? { ...prev, audioUrl: `${base}${sep}q=standard` } : prev,
-      );
+      const stdUrl = `${base}${sep}q=standard`;
+      // 同步 onError 用的 src 镜像——否则降标准后镜像还停在旧音质 URL，transient
+      // 重试会误判"用户切歌了"直接跳过同源重试。
+      currentSrcRef.current = stdUrl;
+      setTrack((prev) => (prev ? { ...prev, audioUrl: stdUrl } : prev));
       return;
     }
     // 2) 跨平台换完整曲流源。
@@ -691,8 +697,12 @@ export function usePlayer(
     const audio = audioRef.current;
     if (!audio) return;
     const onTimeUpdate = () => setCurrentTime(audio.currentTime);
-    const onDurationChange = () => setDuration(audio.duration || 0);
+    const onDurationChange = () => {
+      if (trackRef.current?.provider === 'spotify' && wpsRef?.current?.wpsReady) return;
+      setDuration(audio.duration || 0);
+    };
     const onLoadedMetadata = () => {
+      if (trackRef.current?.provider === 'spotify' && wpsRef?.current?.wpsReady) return;
       setDuration(audio.duration || 0);
       // After a quality-switch reload, jump back to the original position.
       // (Skip trial detection here — a quality reload of a trial is still a
@@ -770,6 +780,10 @@ export function usePlayer(
             return;
           }
           console.warn('[audio] transient — 重试同源 1 次');
+          // 保住播放位置：mid-stream 掉线（"放着放着 code 4"）重载后应从断点续，
+          // 而不是跳回 0。复用 changeQuality 的 pendingSeekRef 机制——
+          // onLoadedMetadata 会在 load() 触发的重新加载后 seek 回去。
+          if (audio.currentTime > 0) pendingSeekRef.current = audio.currentTime;
           audio.load();
           void audio.play().then(
             () => {
@@ -841,7 +855,9 @@ export function usePlayer(
         if (wpsPlayedIdRef.current !== track.id) {
           const uri = `spotify:track:${track.id}`;
           wpsPlayedIdRef.current = track.id;
-          void wps.play(uri).catch((e: Error) => {
+          void wps.transferHere().then(() =>
+            wps.play(uri),
+          ).catch((e: Error) => {
             console.error('[wps] play() rejected:', e);
             setError(`WPS 播放失败：${e.message}`);
           });
@@ -971,9 +987,10 @@ export function usePlayer(
         .replace(/[?&]q=[^&]*/, '')
         .replace(/[?&]$/, '');
       const sep = base.includes('?') ? '&' : '?';
-      setTrack((prev) =>
-        prev ? { ...prev, audioUrl: `${base}${sep}q=${q}` } : prev,
-      );
+      const nextUrl = `${base}${sep}q=${q}`;
+      // 同步 onError 的 src 镜像（见 handleTrialDetected 里同款注释）。
+      currentSrcRef.current = nextUrl;
+      setTrack((prev) => (prev ? { ...prev, audioUrl: nextUrl } : prev));
     }
   };
 

@@ -12,6 +12,12 @@ interface Props {
   source: LyricsSource | null;
   track: Track | null;
   onSeek: (seconds: number) => void;
+  /**
+   * 「换个源找歌词」按钮回调——主源 + altSources + lyrics.ovh 都拿不到词时
+   * 暴露给用户：按歌名+歌手去每个有歌词 API 的平台再搜一次。命中就替换
+   * 当前 lyrics。
+   */
+  onRetryByName?: () => void | Promise<void>;
 }
 
 const TOAST_MS = 1800;
@@ -35,6 +41,7 @@ export default function LyricsCard({
   source,
   track,
   onSeek,
+  onRetryByName,
 }: Props) {
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -123,6 +130,7 @@ export default function LyricsCard({
         synced={synced}
         onSeek={onSeek}
         onCopyLine={handleCopyLine}
+        onRetryByName={onRetryByName}
         noLyricsQuery={
           track ? `${track.title} ${track.artist}`.trim() : undefined
         }

@@ -417,6 +417,44 @@ export async function searchUnified(
 }
 
 /**
+ * 单平台搜索。返回的是服务端 Track[]，转成 UnifiedSearchItem[] 让 SearchPanel
+ * 渲染管线不用分支。sources 仅含选中的那一个平台。
+ *
+ * 用例：SearchPanel 顶部 source 切换条选了某个平台时只走单平台，不再 fan-out。
+ */
+export async function searchOne(
+  provider: MusicProvider,
+  q: string,
+  signal?: AbortSignal,
+): Promise<UnifiedSearchItem[]> {
+  const params = new URLSearchParams({ provider, q });
+  const res = await json<{ items: Track[] }>(
+    await fetch(`${API_BASE}/music/search?${params.toString()}`, {
+      credentials: 'include',
+      signal,
+    }),
+  );
+  return res.items.map((t): UnifiedSearchItem => ({
+    id: `${t.provider}:${t.id}`,
+    title: t.title,
+    artist: t.artist,
+    album: t.album,
+    coverUrl: t.coverUrl,
+    duration: t.duration,
+    bestSource: t.provider,
+    sources: [
+      {
+        platform: t.provider,
+        trackId: t.id,
+        hasCopyright: true,
+        url: t.audioUrl,
+        ...(t.mediaMid ? { mediaMid: t.mediaMid } : {}),
+      },
+    ],
+  }));
+}
+
+/**
  * 实时跨平台匹配：当前 track（provider + 元数据）播放失败（code=4）时，请求
  * 服务端去其余已登录平台搜同名同时长的等价曲目，拿一个可直接播放的 source
  * 回来。找不到返回 null。严格匹配（歌名+歌手+时长 ±3s）在服务端做。
@@ -684,6 +722,36 @@ export async function fetchLyricsAvailability(
   if (!res.ok) return false;
   const data = (await res.json()) as { available: boolean };
   return data.available;
+}
+
+/**
+ * 「换个源找歌词」按钮触发：按歌名+歌手去每个有歌词 API 的平台搜同名同 duration
+ * 曲目，拿其歌词。返回 null 表示所有平台都找不到。
+ */
+export async function fetchLyricsByName(
+  title: string,
+  artist: string,
+  duration: number,
+): Promise<LyricsResult | null> {
+  if (!title || !artist) return null;
+  const params = new URLSearchParams({ title, artist });
+  if (duration > 0) params.set('duration', String(duration));
+  const res = await fetch(
+    `${API_BASE}/music/lyrics/search?${params.toString()}`,
+    { credentials: 'include' },
+  );
+  if (!res.ok) return null;
+  const data = (await res.json()) as {
+    lyrics: LyricLine[] | null;
+    synced?: boolean;
+    source?: LyricsSource | null;
+  };
+  if (!data.lyrics || data.lyrics.length === 0) return null;
+  return {
+    lines: data.lyrics,
+    synced: data.synced ?? true,
+    source: data.source ?? 'lyricsovh',
+  };
 }
 
 // ── 会话快照 备份/导出/导入 ──────────────────────────────────────────────

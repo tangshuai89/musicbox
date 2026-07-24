@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { searchUnified, fetchLyricsAvailability } from '../../api';
-import type { UnifiedSearchItem } from '../../api';
+import { searchUnified, searchOne, fetchLyricsAvailability } from '../../api';
+import type { MusicProvider, UnifiedSearchItem } from '../../api';
+import { PROVIDER_LABELS } from '../../api';
 import { formatDuration } from '../../lib/format';
 import Modal from '../common/Modal';
 import SourceChip from './SourceChip';
@@ -23,6 +24,10 @@ const LYRICS_PROBE_CONCURRENCY = 3;
  *  "什么也没显示"白屏感。实际结果回来后会立即被真实数据覆盖。 */
 const EMPTY_TIMEOUT_MS = 3000;
 
+/** 搜索 source 切换：'all' = 跨平台 fan-out；其它值 = 只搜该单平台。 */
+type SourceMode = 'all' | MusicProvider;
+const SOURCE_MODES: SourceMode[] = ['all', 'qq', 'netease', 'spotify', 'deezer'];
+
 /**
  * 搜索面板——产品核心入口：输入歌手/歌名 → 跨 QQ/网易云/Deezer 同时搜 →
  * 合并去重后展示；点某条从 hasCopyright 最高的源播放；点 ❤ 之后可考虑
@@ -41,6 +46,9 @@ export default function SearchPanel({ onPlay, onClose }: Props) {
   const [searched, setSearched] = useState(false);
   /** item.id → 歌词是否可用。缺键 = 还在探测/未探测。 */
   const [lyricsAvail, setLyricsAvail] = useState<Record<string, boolean>>({});
+  /** source 切换：'all' = 跨平台 fan-out；其它值 = 只搜该单平台。
+   *  切换时清空旧结果 + 重跑当前 query。 */
+  const [sourceMode, setSourceMode] = useState<SourceMode>('all');
 
   const abortRef = useRef<AbortController | null>(null);
   const emptyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -48,9 +56,9 @@ export default function SearchPanel({ onPlay, onClose }: Props) {
   /** 滚动容器 ref —— 用于分页加载的触底检测 */
   const scrollerRef = useRef<HTMLDivElement | null>(null);
 
-  /** 真正发起一次搜索请求。page=1 覆盖式，page>1 追加式。 */
+  /** 真正发起一次搜索请求。page=1 覆盖式，page>1 追加式（仅 unified 路径支持分页）。 */
   const runSearch = useCallback(
-    async (keyword: string, nextPage: number, append: boolean) => {
+    async (keyword: string, nextPage: number, append: boolean, mode: SourceMode) => {
       // 取消上一次的 in-flight 请求，避免旧响应覆盖新结果。
       abortRef.current?.abort();
       const controller = new AbortController();
@@ -77,26 +85,40 @@ export default function SearchPanel({ onPlay, onClose }: Props) {
       }
 
       try {
-        const res = await searchUnified(
-          keyword,
-          nextPage,
-          PAGE_SIZE,
-          controller.signal,
-        );
-        if (controller.signal.aborted) return;
-        // 分页去重：追加时按 id 过滤掉已存在的项，保证列表里每个 merged item 唯一。
-        setItems((prev) => {
-          if (!append) return res.items;
-          const seen = new Set(prev.map((it) => it.id));
-          const fresh = res.items.filter((it) => !seen.has(it.id));
-          return [...prev, ...fresh];
-        });
-        setPage(res.page);
-        setHasMore(res.page * res.pageSize < res.total);
+        let resultCount = 0;
+        if (mode === 'all') {
+          const res = await searchUnified(
+            keyword,
+            nextPage,
+            PAGE_SIZE,
+            controller.signal,
+          );
+          if (controller.signal.aborted) return;
+          setItems((prev) => {
+            if (!append) return res.items;
+            const seen = new Set(prev.map((it) => it.id));
+            const fresh = res.items.filter((it) => !seen.has(it.id));
+            return [...prev, ...fresh];
+          });
+          setPage(res.page);
+          setHasMore(res.page * res.pageSize < res.total);
+          resultCount = res.items.length;
+        } else {
+          // 单平台：服务端只返回一页 Track[]，无翻页。
+          if (append) {
+            setLoadingMore(false);
+            return;
+          }
+          const fetched = await searchOne(mode, keyword, controller.signal);
+          if (controller.signal.aborted) return;
+          setItems(fetched);
+          setHasMore(false);
+          resultCount = fetched.length;
+        }
         if (!append) {
           // 成功响应回来了，3 秒兜底作废（除非确实没结果）
           if (emptyTimerRef.current) clearTimeout(emptyTimerRef.current);
-          if (res.items.length === 0) setEmptyTimedOut(true);
+          if (resultCount === 0) setEmptyTimedOut(true);
         }
       } catch (e) {
         if (controller.signal.aborted) return;
@@ -134,12 +156,25 @@ export default function SearchPanel({ onPlay, onClose }: Props) {
       return;
     }
     debounceRef.current = setTimeout(() => {
-      void runSearch(kw, 1, false);
+      void runSearch(kw, 1, false, sourceMode);
     }, DEBOUNCE_MS);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [q, runSearch]);
+  }, [q, sourceMode, runSearch]);
+
+  // 切换 source 时立即重搜当前 query（不走 debounce）。空 query 时不动。
+  const handleSourceChange = useCallback(
+    (mode: SourceMode) => {
+      if (mode === sourceMode) return;
+      setSourceMode(mode);
+      const kw = q.trim();
+      if (!kw) return;
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      void runSearch(kw, 1, false, mode);
+    },
+    [q, sourceMode, runSearch],
+  );
 
   // 卸载时清理所有 in-flight 请求和 timer
   useEffect(() => {
@@ -196,7 +231,7 @@ export default function SearchPanel({ onPlay, onClose }: Props) {
   const handleLoadMore = () => {
     const kw = q.trim();
     if (!kw || loading || loadingMore || !hasMore) return;
-    void runSearch(kw, page + 1, true);
+    void runSearch(kw, page + 1, true, sourceMode);
   };
 
   // 触底检测
@@ -228,6 +263,23 @@ export default function SearchPanel({ onPlay, onClose }: Props) {
         >
           ×
         </button>
+      </div>
+
+      <div className="search-source-toggle" role="tablist" aria-label="搜索 source">
+        {SOURCE_MODES.map((m) => {
+          const label = m === 'all' ? '全部' : PROVIDER_LABELS[m];
+          return (
+            <button
+              key={m}
+              role="tab"
+              aria-selected={sourceMode === m}
+              className={`search-source-toggle__chip${sourceMode === m ? ' is-active' : ''}`}
+              onClick={() => handleSourceChange(m)}
+            >
+              {label}
+            </button>
+          );
+        })}
       </div>
 
       {error && <div className="search-error">{error}</div>}

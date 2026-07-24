@@ -326,7 +326,7 @@ export function createWpsWrapper(): WpsWrapper {
     if (!deviceId) return;
     const token = await getToken?.();
     if (!token) return;
-    await fetch('https://api.spotify.com/v1/me/player', {
+    const res = await fetch('https://api.spotify.com/v1/me/player', {
       method: 'PUT',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -334,6 +334,10 @@ export function createWpsWrapper(): WpsWrapper {
       },
       body: JSON.stringify({ device_ids: [deviceId], play: false }),
     });
+    if (!res.ok && res.status !== 204) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`spotify-wps: transfer failed ${res.status} ${text.slice(0, 200)}`);
+    }
   }
 
   function onStateChange(cb: WpsStateCallback): () => void {

@@ -61,6 +61,41 @@
   color: #fff;
 }
 
+// Source 切换条：在 search-bar 下方一行 5 个 chip（全部 / QQ / 网易云 /
+// Spotify / Deezer），点击切到单平台搜索路径（fan-out 走 'all'）。
+.search-source-toggle {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px 4px;
+  border-bottom: 1px solid $overlay-divider;
+  overflow-x: auto;
+}
+
+.search-source-toggle__chip {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 13px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.06);
+  color: $overlay-text-dim;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.search-source-toggle__chip:hover:not(.is-active) {
+  background: rgba(255, 255, 255, 0.12);
+  color: $overlay-text;
+}
+
+.search-source-toggle__chip.is-active {
+  background: $accent-green;
+  color: #0b1c12;
+  border-color: $accent-green;
+  font-weight: 600;
+}
+
 .search-error {
   padding: 10px 14px;
   color: $overlay-error;

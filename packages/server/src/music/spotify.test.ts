@@ -107,9 +107,11 @@ void (async () => {
   console.log('✅ 7. saveToken: 写 spotify 字段 + 保留其他');
 }
 
-// ── 8. like: PUT /v1/me/tracks 正确 (v2 ❤ 写回验证) ─────
+// ── 8. like: PUT /v1/me/library 正确 (v2 ❤ 写回验证) ─────
 {
-  // 注入 fetch mock：只关心它被以正确方法/URL/header/body 调用一次。
+  // 注入 fetch mock：只关心它被以正确方法/URL/header 调用一次。
+  // 新端点 (Save Items to Library) 用 ?uris=spotify:track:{id} 形式——不在
+  // JSON body 里，body 应当为空或 undefined。
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const origFetch = globalThis.fetch;
   globalThis.fetch = (async (url: any, init: any) => {
@@ -129,20 +131,19 @@ void (async () => {
     assert.strictEqual(r.success, true);
     assert.strictEqual(calls.length, 1, 'like() 只调一次 fetch');
     const c = calls[0];
-    assert.strictEqual(c.url, 'https://api.spotify.com/v1/me/tracks');
+    assert.strictEqual(c.url, 'https://api.spotify.com/v1/me/library?uris=spotify%3Atrack%3Atrack-abc-123');
     assert.strictEqual(c.init.method, 'PUT');
     const headers = c.init.headers as Record<string, string>;
     assert.strictEqual(headers['Authorization'], 'Bearer valid-tok');
-    assert.strictEqual(headers['Content-Type'], 'application/json');
-    const body = JSON.parse(c.init.body as string);
-    assert.deepStrictEqual(body.ids, ['track-abc-123'], 'body 应含 ids: [trackId]');
-    console.log('✅ 8. like: PUT /v1/me/tracks 带 Bearer + ids[]');
+    // 新端点不用 Content-Type: application/json 也不带 body。
+    assert.strictEqual(c.init.body, undefined);
+    console.log('✅ 8. like: PUT /v1/me/library?uris=spotify:track:{id} 带 Bearer');
   } finally {
     globalThis.fetch = origFetch;
   }
 }
 
-// ── 9. unlike: DELETE /v1/me/tracks 同上 (v2 ❤ 写回验证) ─
+// ── 9. unlike: DELETE /v1/me/library 同上 (v2 ❤ 写回验证) ─
 {
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const origFetch = globalThis.fetch;
@@ -163,11 +164,10 @@ void (async () => {
     assert.strictEqual(r.success, true);
     assert.strictEqual(calls.length, 1);
     const c = calls[0];
-    assert.strictEqual(c.url, 'https://api.spotify.com/v1/me/tracks');
+    assert.strictEqual(c.url, 'https://api.spotify.com/v1/me/library?uris=spotify%3Atrack%3Atrack-xyz-789');
     assert.strictEqual(c.init.method, 'DELETE');
-    const body = JSON.parse(c.init.body as string);
-    assert.deepStrictEqual(body.ids, ['track-xyz-789']);
-    console.log('✅ 9. unlike: DELETE /v1/me/tracks 同 like 但 method=DELETE');
+    assert.strictEqual(c.init.body, undefined);
+    console.log('✅ 9. unlike: DELETE /v1/me/library 同 like 但 method=DELETE');
   } finally {
     globalThis.fetch = origFetch;
   }

@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { fetchLyrics } from '../api';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { fetchLyrics, fetchLyricsByName } from '../api';
 import type { LyricsResult, MusicProvider, Track } from '../api';
 
 /**
@@ -10,6 +10,12 @@ import type { LyricsResult, MusicProvider, Track } from '../api';
  * `altSources` are the same song's equivalents on other platforms (from the
  * unified-search item) — the server falls back through them and then
  * lyrics.ovh when the primary provider has no lyrics.
+ *
+ * `retryByName()` is the manual fallback: when the standard fan-out
+ * (primary → altSources → lyrics.ovh) returns null, the UI exposes a
+ * "换个源找歌词" button that calls this — server then does a fresh
+ * title+artist search on each lyrics-capable platform and returns the
+ * first match.
  */
 export function useLyrics(
   track: Track | null,
@@ -18,6 +24,21 @@ export function useLyrics(
 ) {
   const [result, setResult] = useState<LyricsResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const trackRef = useRef(track);
+  trackRef.current = track;
+
+  const runFetch = useCallback(() => {
+    const cur = trackRef.current;
+    if (!cur?.id || !provider) return Promise.resolve(null);
+    setLoading(true);
+    return fetchLyrics(provider, cur.id, {
+      title: cur.title,
+      artist: cur.artist,
+      sources: altSources?.filter(
+        (s) => !(s.platform === provider && s.trackId === cur.id),
+      ),
+    });
+  }, [provider, altSources]);
 
   useEffect(() => {
     if (!track?.id || !provider) {
@@ -28,13 +49,7 @@ export function useLyrics(
     let cancelled = false;
     setLoading(true);
     setResult(null);
-    fetchLyrics(provider, track.id, {
-      title: track.title,
-      artist: track.artist,
-      sources: altSources?.filter(
-        (s) => !(s.platform === provider && s.trackId === track.id),
-      ),
-    })
+    runFetch()
       .then((res) => {
         if (!cancelled) {
           setResult(res);
@@ -55,10 +70,29 @@ export function useLyrics(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [track?.id, provider]);
 
+  /**
+   * 「换个源找歌词」按钮调用：按 title+artist 去每个有歌词 API 的平台搜同名
+   * 同时长的曲目再拉一次。命中就替换当前 lyrics；没命中保持上一次结果。
+   */
+  const retryByName = useCallback(async () => {
+    const cur = trackRef.current;
+    if (!cur?.title || !cur.artist) return;
+    setLoading(true);
+    try {
+      const res = await fetchLyricsByName(cur.title, cur.artist, cur.duration);
+      if (res) setResult(res);
+    } catch {
+      // 保持上一次的 lyrics
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   return {
     lyrics: result?.lines ?? null,
     synced: result?.synced ?? true,
     source: result?.source ?? null,
     loading,
+    retryByName,
   };
 }

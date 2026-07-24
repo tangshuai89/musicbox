@@ -1076,7 +1076,8 @@ export class MusicService {
           ta &&
           wantArtistKey &&
           !ta.includes(wantArtistKey) &&
-          !wantArtistKey.includes(ta)
+          !wantArtistKey.includes(ta) &&
+          !this.isCrossScript(ta, wantArtistKey)
         )
           return false;
         return !this.durationMismatch(meta.duration, it.duration);
@@ -1153,6 +1154,8 @@ export class MusicService {
 
       // 第二遍：宽松匹配（歌名+歌手双向包含）。修复"QQ 歌手名带日文读法括号
       // → normalizeKey('手嶌葵(てしまあおい)') ≠ 网易云 normalizeKey('手嶌葵')"。
+      // 再加上跨文字系统兜底：歌名对上 + 时长接近 + 双方艺人名一个 CJK 一个
+      // 拉丁字母（如 Spotify 用 "Fujii Kaze" 而 QQ 用 "藤井风"），放宽艺人名约束。
       for (const t of tracks) {
         const tt = this.normalizeKey(t.title, '');
         const ta = this.normalizeKey(t.artist, '');
@@ -1160,7 +1163,9 @@ export class MusicService {
           tt && wantTitleKey && (tt.includes(wantTitleKey) || wantTitleKey.includes(tt));
         if (!titleOk) continue;
         const artistOk =
-          !ta || !wantArtistKey || ta.includes(wantArtistKey) || wantArtistKey.includes(ta);
+          !ta || !wantArtistKey ||
+          ta.includes(wantArtistKey) || wantArtistKey.includes(ta) ||
+          (ta && wantArtistKey && this.isCrossScript(ta, wantArtistKey));
         if (!artistOk) continue;
         if (this.durationMismatch(meta.duration, t.duration)) continue;
         this.logger.log(
@@ -1198,6 +1203,21 @@ export class MusicService {
       candDuration > 0 &&
       Math.abs(candDuration - seedDuration) > VERSION_DURATION_TOLERANCE_SEC
     );
+  }
+
+  /**
+   * 检测两个 normalizeKey 后的艺人名字是否属于"不同文字系统"（一个 CJK，一个
+   * 拉丁字母）。用于放宽跨平台匹配：Spotify 常用罗马字（"Fujii Kaze"）而 QQ/
+   * 网易云用汉字（"藤井风"）——歌名+时长已对上时，不应因艺人脚本不同而拒绝。
+   */
+  private isCrossScript(a: string, b: string): boolean {
+    const hasCjk = (s: string) => /[\u4e00-\u9fff\u3400-\u4dbf]/.test(s);
+    const hasLatin = (s: string) => /[a-z]/.test(s);
+    const aCjk = hasCjk(a);
+    const bCjk = hasCjk(b);
+    if (aCjk && !bCjk && hasLatin(b)) return true;
+    if (bCjk && !aCjk && hasLatin(a)) return true;
+    return false;
   }
 
   // ── 跨平台红心检测 + 自动同步（切歌时用） ──────────────────
@@ -1889,6 +1909,45 @@ export class MusicService {
       }
       if (lines && lines.length > 0) {
         return { lines, synced: false, source: 'lyricsovh' };
+      }
+    }
+    return { lines: null, synced: false, source: null };
+  }
+
+  /**
+   * 「换个源找歌词」按钮触发：按"歌名 + 歌手"去每个有歌词 API 的平台（QQ /
+   * 网易云 / Deezer）搜同名同时长的曲目，找到一个就拿它的歌词返回。
+   *
+   * 这是 `getLyricsAggregated` 失败后的手动兜底：当前 track id 的平台 + 已
+   * 知 altSources + lyrics.ovh 都没词时（比如 Spotify 单平台搜索、或只在
+   * Spotify 上的日区曲），允许用户主动触发「去其他平台用名搜」再拉一次。
+   * 搜索复用 `searchEquivalent` 已有逻辑（精确 → 宽松 → 跨文字系统），命中
+   * 后走 `getLyrics` 拿词；找不到任何平台返回 null。
+   */
+  async getLyricsByName(
+    session: Session,
+    title: string,
+    artist: string,
+    duration: number,
+  ): Promise<{
+    lines: LyricLine[] | null;
+    synced: boolean;
+    source: MusicProvider | 'lyricsovh' | null;
+  }> {
+    if (!title || !artist) return { lines: null, synced: false, source: null };
+    const tried = new Set<string>();
+    for (const platform of LYRICS_SOURCE_PRIORITY) {
+      if (tried.has(platform)) continue;
+      tried.add(platform);
+      const t = await this.searchEquivalent(session, platform, {
+        title,
+        artist,
+        duration,
+      });
+      if (!t) continue;
+      const lines = await this.getLyrics(session, platform, t.id);
+      if (lines && lines.length > 0) {
+        return { lines, synced: isSynced(lines), source: platform };
       }
     }
     return { lines: null, synced: false, source: null };
